@@ -1,4 +1,4 @@
-use burn::{prelude::Backend, tensor::Tensor};
+use ann::{prelude::Backend, tensor::Tensor};
 
 pub fn joints_mse_loss<B: Backend>(
     predictions: Tensor<B, 4>,

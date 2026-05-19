@@ -1,4 +1,4 @@
-use burn::{
+use ann::{
     module::{Initializer, Module},
     nn::{
         BatchNorm, BatchNormConfig, PaddingConfig2d,
@@ -619,3 +619,5 @@ pub fn interpolate_bilinear_aligned<B: Backend>(
             .forward(input)
     }
 }
+
+extern crate ann as burn;

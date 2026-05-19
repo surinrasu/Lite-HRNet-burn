@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use burn::{
+use ann::{
     prelude::Backend,
     tensor::{Tensor, TensorData},
 };

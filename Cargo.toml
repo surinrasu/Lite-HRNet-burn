@@ -1,17 +1,16 @@
 [package]
-name = "lite-hrnet-burn"
+name = "pose-obc-retrieval"
 version = "0.1.0"
 edition = "2024"
 
 [features]
 default = ["flex"]
-flex = ["burn/flex"]
-metal = ["burn/metal", "burn/fusion", "flex"]
-metal-autotune = ["metal", "burn/autotune"]
+flex = ["ann/flex"]
+metal = ["ann/metal", "ann/fusion", "flex"]
 
 [dependencies]
-burn = { version = "0.21.0", default-features = false, features = ["std", "train"] }
-clap = { version = "4.5", features = ["derive"] }
+ann = { package = "burn", version = "0.21.0", default-features = false, features = ["std", "train"] }
+cli = { package = "clap", version = "4.5", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 rand = "0.8.6"
 rayon = "1.11.0"

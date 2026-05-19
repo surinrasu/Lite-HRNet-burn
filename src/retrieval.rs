@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use burn::{
+use ann::{
     module::Module,
     nn::{Linear, LinearConfig},
     optim::{AdamConfig, GradientsParams, Optimizer},
@@ -971,7 +971,7 @@ pub enum RetrievalError {
     Io(std::io::Error),
     Image(image::ImageError),
     Json(json::Error),
-    Recorder(burn::record::RecorderError),
+    Recorder(ann::record::RecorderError),
     InvalidData(String),
     Tensor(String),
 }
@@ -1008,3 +1008,5 @@ impl From<json::Error> for RetrievalError {
         Self::Json(value)
     }
 }
+
+extern crate ann as burn;

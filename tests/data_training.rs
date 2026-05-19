@@ -3,10 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use burn::backend::{Autodiff, Flex};
+use ann::backend::{Autodiff, Flex};
 use image::{Rgb, RgbImage};
 use json::{OwnedValue, json, prelude::*};
-use lite_hrnet_burn::{
+use pose_obc_retrieval::{
     CocoPoseDataset, HeadUpsampleMode, LiteHrModuleType, LiteHrNetConfig, LiteHrNetPoseConfig,
     PoseDataConfig, PoseTrainingConfig, train::train_dataset,
 };

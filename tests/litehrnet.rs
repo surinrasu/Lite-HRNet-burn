@@ -1,8 +1,8 @@
-use burn::{
+use ann::{
     backend::{Autodiff, Flex},
     tensor::{Distribution, Tensor, TensorData},
 };
-use lite_hrnet_burn::{
+use pose_obc_retrieval::{
     ConditionalChannelWeighting, CrossResolutionWeighting, HeadUpsampleMode, IterativeHead,
     LiteHrModule, LiteHrModuleType, LiteHrNetConfig, LiteHrNetPoseConfig, ShuffleUnit,
     SpatialWeighting, Stem, channel_shuffle,
@@ -163,7 +163,7 @@ fn synthetic_training_closure_runs_forward_backward_and_adam() {
     };
 
     let model = config.init::<AB>(&device);
-    let mut optimizer = burn::optim::AdamConfig::new().init::<AB, _>();
+    let mut optimizer = ann::optim::AdamConfig::new().init::<AB, _>();
     let batch = synthetic_pose_batch::<AB>(1, 64, 48, 17, &device);
     let _model = train_step(model, &mut optimizer, batch, 2e-3);
 }

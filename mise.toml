@@ -5,11 +5,11 @@
 rust = { version = "latest", components = "cargo,rust-analyzer" }
 
 [tasks."assets:retrieval"]
-description = "Update local browser assets for the retrieval UI"
+description = "Update local front-end assets for retrieval"
 run = '''
 set -eu
 
-ASSET_DIR="${ASSET_DIR:-assets/retrieval}"
+ASSET_DIR="${ASSET_DIR:-assets}"
 MATERIAL_FONT_URL="https://fonts.gstatic.com/s/materialsymbolsoutlined/v338/kJF1BvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzByHX9rA6RzaxHMPdY43zj-jCxv3fzvRNU22ZXGJpEpjC_1v-p_4MrImHCIJIZrDCvHOem.ttf"
 
 mkdir -p "${ASSET_DIR}"
@@ -22,7 +22,7 @@ cat > "${ASSET_DIR}/material-symbols.css" <<'CSS'
   font-family: "Material Symbols Outlined";
   font-style: normal;
   font-weight: 400;
-  src: url("/assets/retrieval/material-symbols-outlined.ttf") format("truetype");
+  src: url("/assets/material-symbols-outlined.ttf") format("truetype");
 }
 
 .material-symbols-outlined {

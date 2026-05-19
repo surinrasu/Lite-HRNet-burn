@@ -3,9 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use burn::backend::{Autodiff, Flex};
+use ann::backend::{Autodiff, Flex};
 use image::{Rgb, RgbImage};
-use lite_hrnet_burn::{
+use pose_obc_retrieval::{
     RetrievalModelConfig, RetrievalPairDataset, RetrievalTrainingConfig, build_candidate_index,
     extract_glyph_features_from_path, extract_pose_features_from_path, read_candidate_index,
     search_index, train_retrieval_dataset, write_candidate_index,
@@ -15,7 +15,7 @@ type AB = Autodiff<Flex>;
 
 fn fixture_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "lite_hrnet_burn_retrieval_{name}_{}",
+        "pose_obc_retrieval_retrieval_{name}_{}",
         std::process::id()
     ))
 }
@@ -66,13 +66,19 @@ fn retrieval_training_index_and_search_workflow_runs() {
         extract_pose_features_from_path(&dataset.pairs()[0].image_path).expect("pose features");
     let glyph_features =
         extract_glyph_features_from_path(&dataset.pairs()[0].glyph_path).expect("glyph features");
-    assert_eq!(pose_features.len(), lite_hrnet_burn::RETRIEVAL_FEATURE_DIM);
-    assert_eq!(glyph_features.len(), lite_hrnet_burn::RETRIEVAL_FEATURE_DIM);
+    assert_eq!(
+        pose_features.len(),
+        pose_obc_retrieval::RETRIEVAL_FEATURE_DIM
+    );
+    assert_eq!(
+        glyph_features.len(),
+        pose_obc_retrieval::RETRIEVAL_FEATURE_DIM
+    );
 
     let checkpoint_dir = root.join("checkpoints");
     let config = RetrievalTrainingConfig {
         model: RetrievalModelConfig {
-            input_dim: lite_hrnet_burn::RETRIEVAL_FEATURE_DIM,
+            input_dim: pose_obc_retrieval::RETRIEVAL_FEATURE_DIM,
             hidden_dim: 8,
             embedding_dim: 4,
         },
@@ -101,7 +107,7 @@ fn retrieval_training_index_and_search_workflow_runs() {
     let index_path = root.join("glyph_index.json");
     write_candidate_index(&index_path, &index).expect("write index");
     let index = read_candidate_index(&index_path).expect("read index");
-    let query = lite_hrnet_burn::encode_pose_features(&model, &pose_features, &device)
+    let query = pose_obc_retrieval::encode_pose_features(&model, &pose_features, &device)
         .expect("query embedding");
     let hits = search_index(&index, &query, 1);
     assert_eq!(hits.len(), 1);

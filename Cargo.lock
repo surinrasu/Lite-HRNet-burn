@@ -3342,20 +3342,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
-name = "lite-hrnet-burn"
-version = "0.1.0"
-dependencies = [
- "burn",
- "clap",
- "hypertext",
- "image",
- "rand 0.8.6",
- "rayon",
- "serde",
- "simd-json",
-]
-
-[[package]]
 name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4047,6 +4033,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
 dependencies = [
  "portable-atomic",
+]
+
+[[package]]
+name = "pose-obc-retrieval"
+version = "0.1.0"
+dependencies = [
+ "burn",
+ "clap",
+ "hypertext",
+ "image",
+ "rand 0.8.6",
+ "rayon",
+ "serde",
+ "simd-json",
 ]
 
 [[package]]

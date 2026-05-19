@@ -4,12 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use burn::{
+use ann::{
     backend::Autodiff,
     tensor::backend::{AutodiffBackend, Backend},
 };
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
-use lite_hrnet_burn::{
+use cli::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use pose_obc_retrieval::{
     CandidateIndex, CocoPoseDataset, HeadUpsampleMode, LiteHrNetPoseConfig, PoseDataConfig,
     PoseTrainingConfig, PoseTrainingProgress, PoseTrainingReport, RetrievalError,
     RetrievalModelConfig, RetrievalPairDataset, RetrievalTrainingConfig, RetrievalTrainingProgress,
@@ -32,12 +32,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 }
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "lite-hrnet-burn",
-    version,
-    about = "Train and check Lite-HRNet pose models with Burn",
-    arg_required_else_help = true
-)]
+#[command(name = "pose-obc-retrieval", version, arg_required_else_help = true)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -421,7 +416,7 @@ fn parse_positive_f32(value: &str) -> Result<f32, String> {
 fn run_train(args: TrainArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
-            type Backend = Autodiff<burn::backend::Flex>;
+            type Backend = Autodiff<ann::backend::Flex>;
             let device = Default::default();
             train_with_backend::<Backend>(args, &device)
         }
@@ -431,7 +426,7 @@ fn run_train(args: TrainArgs) -> Result<(), Box<dyn Error>> {
 
 #[cfg(feature = "metal")]
 fn train_metal(args: TrainArgs) -> Result<(), Box<dyn Error>> {
-    use burn::backend::Metal;
+    use ann::backend::Metal;
 
     type Backend = Autodiff<Metal>;
     let device = init_metal_device()?;
@@ -509,7 +504,7 @@ fn run_smoke(args: SmokeArgs) -> Result<(), Box<dyn Error>> {
     match backend {
         BackendArg::Flex => {
             print_smoke_start(&args);
-            type Backend = Autodiff<burn::backend::Flex>;
+            type Backend = Autodiff<ann::backend::Flex>;
             let device = Default::default();
             smoke_with_backend::<Backend>(args, &device)?;
             print_smoke_done(backend);
@@ -526,7 +521,7 @@ fn run_smoke(args: SmokeArgs) -> Result<(), Box<dyn Error>> {
 
 #[cfg(feature = "metal")]
 fn smoke_metal(args: SmokeArgs) -> Result<(), Box<dyn Error>> {
-    use burn::backend::Metal;
+    use ann::backend::Metal;
 
     type Backend = Autodiff<Metal>;
     let device = init_metal_device()?;
@@ -535,8 +530,8 @@ fn smoke_metal(args: SmokeArgs) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(feature = "metal")]
-fn init_metal_device() -> Result<burn::backend::wgpu::WgpuDevice, Box<dyn Error>> {
-    use burn::backend::wgpu::{RuntimeOptions, WgpuDevice, graphics::Metal, init_setup};
+fn init_metal_device() -> Result<ann::backend::wgpu::WgpuDevice, Box<dyn Error>> {
+    use ann::backend::wgpu::{RuntimeOptions, WgpuDevice, graphics::Metal, init_setup};
 
     let device = WgpuDevice::DefaultDevice;
     let previous_hook = std::panic::take_hook();
@@ -606,7 +601,7 @@ fn run_retrieval(args: RetrievalArgs) -> Result<(), Box<dyn Error>> {
 fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
-            type Backend = Autodiff<burn::backend::Flex>;
+            type Backend = Autodiff<ann::backend::Flex>;
             let device = Default::default();
             run_retrieval_train_with_backend::<Backend>(args, &device)
         }
@@ -616,7 +611,7 @@ fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
 
 #[cfg(feature = "metal")]
 fn run_retrieval_train_metal(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
-    use burn::backend::Metal;
+    use ann::backend::Metal;
 
     type Backend = Autodiff<Metal>;
     let device = init_metal_device()?;
@@ -634,7 +629,7 @@ fn run_retrieval_train_with_backend<B: AutodiffBackend>(
 ) -> Result<(), Box<dyn Error>> {
     let dataset = RetrievalPairDataset::from_data_root(&args.data_root)?;
     let model = RetrievalModelConfig {
-        input_dim: lite_hrnet_burn::RETRIEVAL_FEATURE_DIM,
+        input_dim: pose_obc_retrieval::RETRIEVAL_FEATURE_DIM,
         hidden_dim: args.hidden_dim,
         embedding_dim: args.embedding_dim,
     };
@@ -689,7 +684,7 @@ fn run_retrieval_train_with_backend<B: AutodiffBackend>(
 fn run_retrieval_index(args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
-            type Backend = burn::backend::Flex;
+            type Backend = ann::backend::Flex;
             let device = Default::default();
             run_retrieval_index_with_backend::<Backend>(args, &device)
         }
@@ -699,7 +694,7 @@ fn run_retrieval_index(args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
 
 #[cfg(feature = "metal")]
 fn run_retrieval_index_metal(args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
-    use burn::backend::Metal;
+    use ann::backend::Metal;
 
     type Backend = Metal;
     let device = init_metal_device()?;
@@ -732,7 +727,7 @@ fn run_retrieval_index_with_backend<B: Backend>(
 fn run_retrieval_search(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
-            type Backend = burn::backend::Flex;
+            type Backend = ann::backend::Flex;
             let device = Default::default();
             run_retrieval_search_with_backend::<Backend>(args, &device)
         }
@@ -742,7 +737,7 @@ fn run_retrieval_search(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>>
 
 #[cfg(feature = "metal")]
 fn run_retrieval_search_metal(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>> {
-    use burn::backend::Metal;
+    use ann::backend::Metal;
 
     type Backend = Metal;
     let device = init_metal_device()?;
@@ -814,7 +809,7 @@ fn run_retrieval_search_with_backend<B: Backend>(
 fn run_retrieval_serve(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
-            type Backend = burn::backend::Flex;
+            type Backend = ann::backend::Flex;
             let device = Default::default();
             run_retrieval_serve_with_backend::<Backend>(args, device)
         }
@@ -824,7 +819,7 @@ fn run_retrieval_serve(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
 
 #[cfg(feature = "metal")]
 fn run_retrieval_serve_metal(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
-    use burn::backend::Metal;
+    use ann::backend::Metal;
 
     type Backend = Metal;
     let device = init_metal_device()?;
@@ -1111,7 +1106,7 @@ mod tests {
     #[test]
     fn parses_train_command() {
         let cli = Cli::parse_from([
-            "lite-hrnet-burn",
+            "pose-obc-retrieval",
             "train",
             "--annotations",
             "person_keypoints_train.json",
@@ -1136,7 +1131,7 @@ mod tests {
     #[test]
     fn parses_smoke_command() {
         let cli = Cli::parse_from([
-            "lite-hrnet-burn",
+            "pose-obc-retrieval",
             "smoke",
             "--backend",
             "metal",
@@ -1157,7 +1152,7 @@ mod tests {
     #[test]
     fn parses_retrieval_backend_argument() {
         let cli = Cli::parse_from([
-            "lite-hrnet-burn",
+            "pose-obc-retrieval",
             "retrieval",
             "search",
             "--backend",
@@ -1178,7 +1173,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_input_size() {
-        let error = Cli::try_parse_from(["lite-hrnet-burn", "smoke", "--input-size", "64"])
+        let error = Cli::try_parse_from(["pose-obc-retrieval", "smoke", "--input-size", "64"])
             .expect_err("invalid input size should fail");
 
         assert!(error.to_string().contains("HEIGHTxWIDTH"));
@@ -1187,7 +1182,7 @@ mod tests {
     #[test]
     fn rejects_validation_images_without_validation_annotations() {
         let error = Cli::try_parse_from([
-            "lite-hrnet-burn",
+            "pose-obc-retrieval",
             "train",
             "--annotations",
             "person_keypoints_train.json",
@@ -1201,3 +1196,5 @@ mod tests {
         assert!(error.to_string().contains("--validation-annotations"));
     }
 }
+
+extern crate cli as clap;

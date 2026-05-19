@@ -1,4 +1,4 @@
-use burn::{module::Module, prelude::Backend, tensor::Tensor};
+use ann::{module::Module, prelude::Backend, tensor::Tensor};
 
 use crate::layers::{
     ActivationKind, ConditionalChannelWeighting, ConvBnAct, DepthwiseSeparableConv, ShuffleUnit,
@@ -419,7 +419,7 @@ impl<B: Backend> LiteHrModule<B> {
                     };
                     y = y + addend;
                 }
-                fused.push(burn::tensor::activation::relu(y));
+                fused.push(ann::tensor::activation::relu(y));
             }
             output = fused;
         } else if !self.multiscale_output {
@@ -682,3 +682,5 @@ impl<B: Backend> LiteHrNetPose<B> {
             .forward(features.into_iter().next().expect("backbone output"))
     }
 }
+
+extern crate ann as burn;

@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use burn::{
+use ann::{
     module::{AutodiffModule, Module},
     optim::{AdamConfig, GradientsParams, Optimizer},
     prelude::Backend,
@@ -522,7 +522,7 @@ pub enum PoseTrainError {
     Data(PoseDataError),
     Io(std::io::Error),
     Json(json::Error),
-    Recorder(burn::record::RecorderError),
+    Recorder(ann::record::RecorderError),
     InvalidConfig(String),
     Prefetch(String),
 }
@@ -559,3 +559,5 @@ impl From<json::Error> for PoseTrainError {
         Self::Json(value)
     }
 }
+
+extern crate ann as burn;

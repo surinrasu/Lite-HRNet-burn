@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use burn::tensor::backend::Backend;
+use ann::tensor::backend::Backend;
 use hypertext::{Raw, prelude::*};
 
 use crate::{
@@ -15,11 +15,10 @@ use crate::{
     search_index,
 };
 
-const BEER_CSS: &[u8] = include_bytes!("../assets/retrieval/beer.min.css");
-const BEER_JS: &[u8] = include_bytes!("../assets/retrieval/beer.min.js");
-const MATERIAL_SYMBOLS_CSS: &[u8] = include_bytes!("../assets/retrieval/material-symbols.css");
-const MATERIAL_SYMBOLS_FONT: &[u8] =
-    include_bytes!("../assets/retrieval/material-symbols-outlined.ttf");
+const BEER_CSS: &[u8] = include_bytes!("../assets/beer.min.css");
+const BEER_JS: &[u8] = include_bytes!("../assets/beer.min.js");
+const MATERIAL_SYMBOLS_CSS: &[u8] = include_bytes!("../assets/material-symbols.css");
+const MATERIAL_SYMBOLS_FONT: &[u8] = include_bytes!("../assets/material-symbols-outlined.ttf");
 
 pub struct RetrievalService<B: Backend> {
     pub model: RetrievalModel<B>,
@@ -66,16 +65,14 @@ fn handle_connection<B: Backend>(
 fn route_request<B: Backend>(service: &RetrievalService<B>, request: HttpRequest) -> HttpResponse {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => html_response(render_home(service, None)),
-        ("GET", "/assets/retrieval/beer.min.css") => {
-            static_response("text/css; charset=utf-8", BEER_CSS)
-        }
-        ("GET", "/assets/retrieval/beer.min.js") => {
+        ("GET", "/assets/beer.min.css") => static_response("text/css; charset=utf-8", BEER_CSS),
+        ("GET", "/assets/beer.min.js") => {
             static_response("application/javascript; charset=utf-8", BEER_JS)
         }
-        ("GET", "/assets/retrieval/material-symbols.css") => {
+        ("GET", "/assets/material-symbols.css") => {
             static_response("text/css; charset=utf-8", MATERIAL_SYMBOLS_CSS)
         }
-        ("GET", "/assets/retrieval/material-symbols-outlined.ttf") => {
+        ("GET", "/assets/material-symbols-outlined.ttf") => {
             static_response("font/ttf", MATERIAL_SYMBOLS_FONT)
         }
         ("GET", "/health") => HttpResponse::ok(
@@ -220,9 +217,9 @@ fn render_home(service: &RetrievalService<impl Backend>, error: Option<&str>) ->
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="stylesheet" href="/assets/retrieval/material-symbols.css";
-                link rel="stylesheet" href="/assets/retrieval/beer.min.css";
-                script type="module" src="/assets/retrieval/beer.min.js" {}
+                link rel="stylesheet" href="/assets/material-symbols.css";
+                link rel="stylesheet" href="/assets/beer.min.css";
+                script type="module" src="/assets/beer.min.js" {}
                 style { (Raw::dangerously_create(APP_CSS)) }
                 title { "Oracle Pose Retrieval" }
             }
@@ -328,9 +325,9 @@ fn render_results(
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="stylesheet" href="/assets/retrieval/material-symbols.css";
-                link rel="stylesheet" href="/assets/retrieval/beer.min.css";
-                script type="module" src="/assets/retrieval/beer.min.js" {}
+                link rel="stylesheet" href="/assets/material-symbols.css";
+                link rel="stylesheet" href="/assets/beer.min.css";
+                script type="module" src="/assets/beer.min.js" {}
                 style { (Raw::dangerously_create(APP_CSS)) }
                 title { "Oracle Pose Retrieval" }
             }

@@ -1,22 +1,22 @@
-use burn::{
+use ann::{
     backend::Flex,
     module::{Module, ModuleMapper, Param},
     tensor::{Tensor, TensorData},
 };
 use json::{OwnedValue, prelude::*};
-use lite_hrnet_burn::{
+use pose_obc_retrieval::{
     ConditionalChannelWeighting, CrossResolutionWeighting, HeadUpsampleMode, IterativeHead,
     LiteHrModule, LiteHrModuleType, ShuffleUnit, SpatialWeighting, Stem, channel_shuffle,
 };
 
 type B = Flex;
 
-struct ReferenceParamMapper<B: burn::tensor::backend::Backend> {
+struct ReferenceParamMapper<B: ann::tensor::backend::Backend> {
     path: Vec<String>,
     _backend: core::marker::PhantomData<B>,
 }
 
-impl<B: burn::tensor::backend::Backend> Default for ReferenceParamMapper<B> {
+impl<B: ann::tensor::backend::Backend> Default for ReferenceParamMapper<B> {
     fn default() -> Self {
         Self {
             path: Vec::new(),
@@ -25,7 +25,7 @@ impl<B: burn::tensor::backend::Backend> Default for ReferenceParamMapper<B> {
     }
 }
 
-impl<B: burn::tensor::backend::Backend> ReferenceParamMapper<B> {
+impl<B: ann::tensor::backend::Backend> ReferenceParamMapper<B> {
     fn current_name(&self) -> Option<&str> {
         self.path.last().map(String::as_str)
     }
@@ -40,7 +40,7 @@ impl<B: burn::tensor::backend::Backend> ReferenceParamMapper<B> {
     }
 }
 
-impl<B: burn::tensor::backend::Backend> ModuleMapper<B> for ReferenceParamMapper<B> {
+impl<B: ann::tensor::backend::Backend> ModuleMapper<B> for ReferenceParamMapper<B> {
     fn enter_module(&mut self, name: &str, _container_type: &str) {
         self.path.push(name.to_string());
     }
@@ -210,3 +210,5 @@ fn stem_shuffle_module_and_head_match_torch_reference_fixture() {
         1e-5,
     );
 }
+
+extern crate ann as burn;
