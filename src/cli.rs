@@ -1,6 +1,13 @@
-use std::{error::Error, fmt, path::PathBuf};
+use std::{
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+};
 
-use burn::{backend::Autodiff, tensor::backend::AutodiffBackend};
+use burn::{
+    backend::Autodiff,
+    tensor::backend::{AutodiffBackend, Backend},
+};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use lite_hrnet_burn::{
     CandidateIndex, CocoPoseDataset, HeadUpsampleMode, LiteHrNetPoseConfig, PoseDataConfig,
@@ -9,7 +16,7 @@ use lite_hrnet_burn::{
     build_candidate_index, encode_pose_features, extract_pose_features_from_path,
     load_retrieval_model, load_retrieval_model_config, read_candidate_index, search_index,
     serve_retrieval,
-    service::{RetrievalService, RetrievalServiceBackend},
+    service::RetrievalService,
     train::{run_synthetic_training, train_dataset_with_progress},
     train_retrieval_dataset, write_candidate_index,
 };
@@ -121,6 +128,9 @@ struct TrainArgs {
     /// Print batch progress every N batches. Use 0 for epoch-only progress.
     #[arg(long, default_value_t = 50)]
     log_every: usize,
+    /// CPU batches to prepare ahead of the GPU step. Defaults to 2 on metal and 0 on flex.
+    #[arg(long = "prefetch-batches")]
+    prefetch_batches: Option<usize>,
     /// RNG seed used for sample shuffling.
     #[arg(long, default_value_t = 42)]
     seed: u64,
@@ -162,6 +172,9 @@ struct SmokeArgs {
 
 #[derive(Clone, Debug, Args)]
 struct RetrievalTrainArgs {
+    /// Burn backend to use.
+    #[arg(long, value_enum, default_value_t = BackendArg::Flex)]
+    backend: BackendArg,
     /// Root containing data/persona_*/images and data/persona_*/glyphs.
     #[arg(long = "data-root", value_name = "DIR", default_value = "data")]
     data_root: PathBuf,
@@ -210,6 +223,9 @@ struct RetrievalTrainArgs {
 
 #[derive(Clone, Debug, Args)]
 struct RetrievalIndexArgs {
+    /// Burn backend to use for candidate encoding.
+    #[arg(long, value_enum, default_value_t = BackendArg::Flex)]
+    backend: BackendArg,
     /// Root containing data/persona_*/images and data/persona_*/glyphs.
     #[arg(long = "data-root", value_name = "DIR", default_value = "data")]
     data_root: PathBuf,
@@ -234,6 +250,9 @@ struct RetrievalIndexArgs {
 
 #[derive(Clone, Debug, Args)]
 struct RetrievalSearchArgs {
+    /// Burn backend to use for query encoding.
+    #[arg(long, value_enum, default_value_t = BackendArg::Flex)]
+    backend: BackendArg,
     /// Candidate embedding index JSON.
     #[arg(
         long,
@@ -263,6 +282,9 @@ struct RetrievalSearchArgs {
 
 #[derive(Clone, Debug, Args)]
 struct RetrievalServeArgs {
+    /// Burn backend to use for query and candidate encoding.
+    #[arg(long, value_enum, default_value_t = BackendArg::Flex)]
+    backend: BackendArg,
     /// Address for the HTTP UI.
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: String,
@@ -412,11 +434,7 @@ fn train_metal(args: TrainArgs) -> Result<(), Box<dyn Error>> {
     use burn::backend::Metal;
 
     type Backend = Autodiff<Metal>;
-    let device = Default::default();
-    burn::backend::wgpu::init_setup::<burn::backend::wgpu::graphics::Metal>(
-        &device,
-        Default::default(),
-    );
+    let device = init_metal_device()?;
     train_with_backend::<Backend>(args, &device)
 }
 
@@ -454,11 +472,13 @@ fn train_with_backend<B: AutodiffBackend>(
     let val_samples = val_dataset
         .as_ref()
         .map(|dataset| limited_len(dataset.len(), args.max_val_samples));
+    let prefetch_batches = resolve_prefetch_batches(args.backend, args.prefetch_batches);
     print_train_start(
         &args,
         train_samples,
         val_samples,
         model.backbone.head_upsample_mode,
+        prefetch_batches,
     );
 
     let config = PoseTrainingConfig {
@@ -473,6 +493,7 @@ fn train_with_backend<B: AutodiffBackend>(
         checkpoint_dir: args.out_dir,
         log_every: args.log_every,
         save_every_epoch: args.save_every_epoch,
+        prefetch_batches,
     };
 
     let (_model, report) =
@@ -508,13 +529,44 @@ fn smoke_metal(args: SmokeArgs) -> Result<(), Box<dyn Error>> {
     use burn::backend::Metal;
 
     type Backend = Autodiff<Metal>;
-    let device = Default::default();
-    burn::backend::wgpu::init_setup::<burn::backend::wgpu::graphics::Metal>(
-        &device,
-        Default::default(),
-    );
+    let device = init_metal_device()?;
     smoke_with_backend::<Backend>(args, &device)?;
     Ok(())
+}
+
+#[cfg(feature = "metal")]
+fn init_metal_device() -> Result<burn::backend::wgpu::WgpuDevice, Box<dyn Error>> {
+    use burn::backend::wgpu::{RuntimeOptions, WgpuDevice, graphics::Metal, init_setup};
+
+    let device = WgpuDevice::DefaultDevice;
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let setup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        init_setup::<Metal>(&device, RuntimeOptions::default());
+    }));
+    std::panic::set_hook(previous_hook);
+
+    match setup {
+        Ok(()) => Ok(device),
+        Err(payload) => {
+            let message = panic_payload_message(payload.as_ref());
+            Err(std::io::Error::other(format!(
+                "failed to initialize Burn Metal backend: {message}"
+            ))
+            .into())
+        }
+    }
+}
+
+#[cfg(feature = "metal")]
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 #[cfg(not(feature = "metal"))]
@@ -552,8 +604,34 @@ fn run_retrieval(args: RetrievalArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
-    type Backend = RetrievalServiceBackend;
-    let device = Default::default();
+    match args.backend {
+        BackendArg::Flex => {
+            type Backend = Autodiff<burn::backend::Flex>;
+            let device = Default::default();
+            run_retrieval_train_with_backend::<Backend>(args, &device)
+        }
+        BackendArg::Metal => run_retrieval_train_metal(args),
+    }
+}
+
+#[cfg(feature = "metal")]
+fn run_retrieval_train_metal(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
+    use burn::backend::Metal;
+
+    type Backend = Autodiff<Metal>;
+    let device = init_metal_device()?;
+    run_retrieval_train_with_backend::<Backend>(args, &device)
+}
+
+#[cfg(not(feature = "metal"))]
+fn run_retrieval_train_metal(_args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
+    Err("rebuild with `--features metal` to train retrieval on Metal".into())
+}
+
+fn run_retrieval_train_with_backend<B: AutodiffBackend>(
+    args: RetrievalTrainArgs,
+    device: &B::Device,
+) -> Result<(), Box<dyn Error>> {
     let dataset = RetrievalPairDataset::from_data_root(&args.data_root)?;
     let model = RetrievalModelConfig {
         input_dim: lite_hrnet_burn::RETRIEVAL_FEATURE_DIM,
@@ -576,6 +654,7 @@ fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
 
     let train_pairs = limited_len(dataset.len(), args.max_pairs);
     println!("Training pose/glyph retrieval");
+    println!("  backend: {}", args.backend);
     println!("  pairs: {train_pairs} ({})", args.data_root.display());
     println!(
         "  input: {}  hidden: {}  embedding: {}",
@@ -589,10 +668,9 @@ fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
 
     let checkpoint_dir = args.out_dir.clone();
     let total_epochs = args.epochs;
-    let (_model, report) =
-        train_retrieval_dataset::<Backend, _>(config, &dataset, &device, |progress| {
-            print_retrieval_progress(progress, total_epochs);
-        })?;
+    let (_model, report) = train_retrieval_dataset::<B, _>(config, &dataset, device, |progress| {
+        print_retrieval_progress(progress, total_epochs);
+    })?;
     let last = report.epochs.last().expect("at least one epoch");
     println!("Finished retrieval training");
     println!("  final epoch: {}", last.epoch);
@@ -609,28 +687,84 @@ fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_retrieval_index(args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
-    type Backend = RetrievalServiceBackend;
-    let device = Default::default();
+    match args.backend {
+        BackendArg::Flex => {
+            type Backend = burn::backend::Flex;
+            let device = Default::default();
+            run_retrieval_index_with_backend::<Backend>(args, &device)
+        }
+        BackendArg::Metal => run_retrieval_index_metal(args),
+    }
+}
+
+#[cfg(feature = "metal")]
+fn run_retrieval_index_metal(args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
+    use burn::backend::Metal;
+
+    type Backend = Metal;
+    let device = init_metal_device()?;
+    run_retrieval_index_with_backend::<Backend>(args, &device)
+}
+
+#[cfg(not(feature = "metal"))]
+fn run_retrieval_index_metal(_args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
+    Err("rebuild with `--features metal` to index retrieval candidates on Metal".into())
+}
+
+fn run_retrieval_index_with_backend<B: Backend>(
+    args: RetrievalIndexArgs,
+    device: &B::Device,
+) -> Result<(), Box<dyn Error>> {
     let dataset = RetrievalPairDataset::from_data_root(&args.data_root)?;
     let model_config =
-        load_retrieval_config_or_default(args.config.as_ref(), Some(&args.model), None)?;
-    let model = load_retrieval_model::<Backend>(&model_config, &args.model, &device)?;
-    let index = build_candidate_index(&model, model_config, &dataset, args.unique_glyphs, &device)?;
+        load_retrieval_config_or_default(args.config.as_deref(), Some(args.model.as_path()), None)?;
+    let model = load_retrieval_model::<B>(&model_config, &args.model, device)?;
+    let index = build_candidate_index(&model, model_config, &dataset, args.unique_glyphs, device)?;
     ensure_parent_dir(&args.output)?;
     write_candidate_index(&args.output, &index)?;
     println!("Built candidate glyph index");
+    println!("  backend: {}", args.backend);
     println!("  candidates: {}", index.entries.len());
     println!("  output: {}", args.output.display());
     Ok(())
 }
 
 fn run_retrieval_search(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>> {
-    type Backend = RetrievalServiceBackend;
-    let device = Default::default();
+    match args.backend {
+        BackendArg::Flex => {
+            type Backend = burn::backend::Flex;
+            let device = Default::default();
+            run_retrieval_search_with_backend::<Backend>(args, &device)
+        }
+        BackendArg::Metal => run_retrieval_search_metal(args),
+    }
+}
+
+#[cfg(feature = "metal")]
+fn run_retrieval_search_metal(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>> {
+    use burn::backend::Metal;
+
+    type Backend = Metal;
+    let device = init_metal_device()?;
+    run_retrieval_search_with_backend::<Backend>(args, &device)
+}
+
+#[cfg(not(feature = "metal"))]
+fn run_retrieval_search_metal(_args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>> {
+    Err("rebuild with `--features metal` to search retrieval on Metal".into())
+}
+
+fn run_retrieval_search_with_backend<B: Backend>(
+    args: RetrievalSearchArgs,
+    device: &B::Device,
+) -> Result<(), Box<dyn Error>> {
     let index = read_candidate_index(&args.index)?;
-    let model_config =
-        load_retrieval_config_or_default(args.config.as_ref(), Some(&args.model), Some(&index))?;
-    let model = load_retrieval_model::<Backend>(&model_config, &args.model, &device)?;
+    let model_config = load_retrieval_config_or_default(
+        args.config.as_deref(),
+        Some(args.model.as_path()),
+        Some(&index),
+    )?;
+    let model = load_retrieval_model::<B>(&model_config, &args.model, device)?;
 
     let (features, label) = match (&args.image, args.sample) {
         (Some(image), None) => (
@@ -654,10 +788,11 @@ fn run_retrieval_search(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>>
             return Err("provide exactly one of --image or --sample".into());
         }
     };
-    let embedding = encode_pose_features(&model, &features, &device)?;
+    let embedding = encode_pose_features(&model, &features, device)?;
     let hits = search_index(&index, &embedding, args.top_k);
 
     println!("Query: {label}");
+    println!("Backend: {}", args.backend);
     for (rank, hit) in hits.iter().enumerate() {
         let label = hit
             .entry
@@ -677,24 +812,53 @@ fn run_retrieval_search(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>>
 }
 
 fn run_retrieval_serve(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
-    type Backend = RetrievalServiceBackend;
-    let device = Default::default();
+    match args.backend {
+        BackendArg::Flex => {
+            type Backend = burn::backend::Flex;
+            let device = Default::default();
+            run_retrieval_serve_with_backend::<Backend>(args, device)
+        }
+        BackendArg::Metal => run_retrieval_serve_metal(args),
+    }
+}
+
+#[cfg(feature = "metal")]
+fn run_retrieval_serve_metal(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
+    use burn::backend::Metal;
+
+    type Backend = Metal;
+    let device = init_metal_device()?;
+    run_retrieval_serve_with_backend::<Backend>(args, device)
+}
+
+#[cfg(not(feature = "metal"))]
+fn run_retrieval_serve_metal(_args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
+    Err("rebuild with `--features metal` to serve retrieval on Metal".into())
+}
+
+fn run_retrieval_serve_with_backend<B: Backend>(
+    args: RetrievalServeArgs,
+    device: B::Device,
+) -> Result<(), Box<dyn Error>> {
     let dataset = RetrievalPairDataset::from_data_root(&args.data_root)?;
 
     let (index, model_config) = match &args.index {
         Some(index_path) => {
             let index = read_candidate_index(index_path)?;
             let model_config = load_retrieval_config_or_default(
-                args.config.as_ref(),
-                Some(&args.model),
+                args.config.as_deref(),
+                Some(args.model.as_path()),
                 Some(&index),
             )?;
             (index, model_config)
         }
         None => {
-            let model_config =
-                load_retrieval_config_or_default(args.config.as_ref(), Some(&args.model), None)?;
-            let model = load_retrieval_model::<Backend>(&model_config, &args.model, &device)?;
+            let model_config = load_retrieval_config_or_default(
+                args.config.as_deref(),
+                Some(args.model.as_path()),
+                None,
+            )?;
+            let model = load_retrieval_model::<B>(&model_config, &args.model, &device)?;
             let index = build_candidate_index(
                 &model,
                 model_config.clone(),
@@ -706,8 +870,9 @@ fn run_retrieval_serve(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let model = load_retrieval_model::<Backend>(&model_config, &args.model, &device)?;
+    let model = load_retrieval_model::<B>(&model_config, &args.model, &device)?;
     println!("Serving retrieval UI");
+    println!("  backend: {}", args.backend);
     println!("  pairs: {}", dataset.len());
     println!("  candidates: {}", index.entries.len());
     println!("  model: {}", args.model.display());
@@ -747,8 +912,8 @@ fn print_retrieval_progress(progress: RetrievalTrainingProgress, total_epochs: u
 }
 
 fn load_retrieval_config_or_default(
-    config_path: Option<&PathBuf>,
-    model_path: Option<&PathBuf>,
+    config_path: Option<&Path>,
+    model_path: Option<&Path>,
     index: Option<&CandidateIndex>,
 ) -> Result<RetrievalModelConfig, Box<dyn Error>> {
     if let Some(config_path) = config_path {
@@ -766,7 +931,7 @@ fn load_retrieval_config_or_default(
     Err("retrieval config not found; pass --config or use a model directory with retrieval_config.json".into())
 }
 
-fn default_retrieval_config_path(model_path: &PathBuf) -> PathBuf {
+fn default_retrieval_config_path(model_path: &Path) -> PathBuf {
     let base = if model_path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -774,14 +939,14 @@ fn default_retrieval_config_path(model_path: &PathBuf) -> PathBuf {
     {
         model_path.with_extension("")
     } else {
-        model_path.clone()
+        model_path.to_path_buf()
     };
     base.parent()
         .map(|parent| parent.join("retrieval_config.json"))
         .unwrap_or_else(|| PathBuf::from("retrieval_config.json"))
 }
 
-fn ensure_parent_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
+fn ensure_parent_dir(path: &Path) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -804,6 +969,13 @@ fn resolve_head_upsample(
     })
 }
 
+fn resolve_prefetch_batches(backend: BackendArg, requested: Option<usize>) -> usize {
+    requested.unwrap_or(match backend {
+        BackendArg::Flex => 0,
+        BackendArg::Metal => 2,
+    })
+}
+
 fn limited_len(len: usize, limit: Option<usize>) -> usize {
     limit.map_or(len, |limit| len.min(limit))
 }
@@ -813,6 +985,7 @@ fn print_train_start(
     train_samples: usize,
     val_samples: Option<usize>,
     head_upsample_mode: HeadUpsampleMode,
+    prefetch_batches: usize,
 ) {
     println!("Training COCO keypoints");
     println!("  backend: {}", args.backend);
@@ -846,6 +1019,7 @@ fn print_train_start(
     } else {
         println!("  progress: epoch only");
     }
+    println!("  prefetch: {prefetch_batches} CPU batches");
 }
 
 fn print_training_progress(progress: PoseTrainingProgress, total_epochs: usize) {
@@ -871,7 +1045,7 @@ fn print_training_progress(progress: PoseTrainingProgress, total_epochs: usize) 
     }
 }
 
-fn print_training_done(report: &PoseTrainingReport, checkpoint_dir: &PathBuf) {
+fn print_training_done(report: &PoseTrainingReport, checkpoint_dir: &Path) {
     let last = report.epochs.last().expect("at least one epoch");
     println!("Finished training");
     println!("  final epoch: {}", last.epoch);

@@ -6,8 +6,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use burn::tensor::{Tensor, TensorData, backend::AutodiffBackend};
+use burn::{
+    prelude::Backend,
+    tensor::{Tensor, TensorData},
+};
 use image::{ImageReader, RgbImage};
+use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::train::PoseBatch;
@@ -65,6 +69,57 @@ pub struct PoseTensorSample {
     pub image: Vec<f32>,
     pub target: Vec<f32>,
     pub target_weight: Vec<f32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PoseTensorBatch {
+    pub images: Vec<f32>,
+    pub targets: Vec<f32>,
+    pub target_weight: Vec<f32>,
+    pub batch_size: usize,
+    pub input_height: usize,
+    pub input_width: usize,
+    pub heatmap_height: usize,
+    pub heatmap_width: usize,
+    pub num_joints: usize,
+}
+
+impl PoseTensorBatch {
+    pub fn len(&self) -> usize {
+        self.batch_size
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.batch_size == 0
+    }
+
+    pub fn into_pose_batch<B: Backend>(self, device: &B::Device) -> PoseBatch<B> {
+        PoseBatch {
+            images: Tensor::from_data(
+                TensorData::new(
+                    self.images,
+                    [self.batch_size, 3, self.input_height, self.input_width],
+                ),
+                device,
+            ),
+            targets: Tensor::from_data(
+                TensorData::new(
+                    self.targets,
+                    [
+                        self.batch_size,
+                        self.num_joints,
+                        self.heatmap_height,
+                        self.heatmap_width,
+                    ],
+                ),
+                device,
+            ),
+            target_weight: Tensor::from_data(
+                TensorData::new(self.target_weight, [self.batch_size, self.num_joints, 1]),
+                device,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -204,11 +259,15 @@ impl CocoPoseDataset {
         })
     }
 
-    pub fn batch<B: AutodiffBackend>(
+    pub fn batch<B: Backend>(
         &self,
         indices: &[usize],
         device: &B::Device,
     ) -> Result<PoseBatch<B>, PoseDataError> {
+        Ok(self.load_tensor_batch(indices)?.into_pose_batch(device))
+    }
+
+    pub fn load_tensor_batch(&self, indices: &[usize]) -> Result<PoseTensorBatch, PoseDataError> {
         if indices.is_empty() {
             return Err(PoseDataError::InvalidDataset(
                 "batch requires at least one sample".to_string(),
@@ -224,42 +283,28 @@ impl CocoPoseDataset {
         let mut targets = Vec::with_capacity(indices.len() * target_len);
         let mut weights = Vec::with_capacity(indices.len() * weight_len);
 
-        for &index in indices {
-            let sample = self.load_tensor_sample(index)?;
+        let samples = indices
+            .par_iter()
+            .map(|&index| self.load_tensor_sample(index))
+            .collect::<Vec<_>>();
+
+        for sample in samples {
+            let sample = sample?;
             images.extend(sample.image);
             targets.extend(sample.target);
             weights.extend(sample.target_weight);
         }
 
-        Ok(PoseBatch {
-            images: Tensor::from_data(
-                TensorData::new(
-                    images,
-                    [
-                        indices.len(),
-                        3,
-                        self.config.input_height,
-                        self.config.input_width,
-                    ],
-                ),
-                device,
-            ),
-            targets: Tensor::from_data(
-                TensorData::new(
-                    targets,
-                    [
-                        indices.len(),
-                        self.config.num_joints,
-                        self.config.heatmap_height,
-                        self.config.heatmap_width,
-                    ],
-                ),
-                device,
-            ),
-            target_weight: Tensor::from_data(
-                TensorData::new(weights, [indices.len(), self.config.num_joints, 1]),
-                device,
-            ),
+        Ok(PoseTensorBatch {
+            images,
+            targets,
+            target_weight: weights,
+            batch_size: indices.len(),
+            input_height: self.config.input_height,
+            input_width: self.config.input_width,
+            heatmap_height: self.config.heatmap_height,
+            heatmap_width: self.config.heatmap_width,
+            num_joints: self.config.num_joints,
         })
     }
 }

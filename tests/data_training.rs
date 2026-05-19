@@ -137,6 +137,7 @@ fn dataset_training_loop_writes_report_and_checkpoints() {
         checkpoint_dir: checkpoint_dir.clone(),
         log_every: 0,
         save_every_epoch: false,
+        prefetch_batches: 0,
     };
 
     let device = Default::default();

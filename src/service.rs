@@ -6,10 +6,7 @@ use std::{
     path::Path,
 };
 
-use burn::{
-    backend::{Autodiff, Flex},
-    tensor::backend::BackendTypes,
-};
+use burn::tensor::backend::Backend;
 use hypertext::{Raw, prelude::*};
 
 use crate::{
@@ -18,17 +15,18 @@ use crate::{
     search_index,
 };
 
-pub type RetrievalServiceBackend = Autodiff<Flex>;
-
-pub struct RetrievalService {
-    pub model: RetrievalModel<RetrievalServiceBackend>,
+pub struct RetrievalService<B: Backend> {
+    pub model: RetrievalModel<B>,
     pub index: CandidateIndex,
     pub dataset: RetrievalPairDataset,
-    pub device: <RetrievalServiceBackend as BackendTypes>::Device,
+    pub device: B::Device,
     pub default_top_k: usize,
 }
 
-pub fn serve_retrieval(addr: &str, service: RetrievalService) -> Result<(), RetrievalError> {
+pub fn serve_retrieval<B: Backend>(
+    addr: &str,
+    service: RetrievalService<B>,
+) -> Result<(), RetrievalError> {
     let listener = TcpListener::bind(addr)?;
     println!("Retrieval UI listening on http://{addr}");
 
@@ -47,8 +45,8 @@ pub fn serve_retrieval(addr: &str, service: RetrievalService) -> Result<(), Retr
     Ok(())
 }
 
-fn handle_connection(
-    service: &RetrievalService,
+fn handle_connection<B: Backend>(
+    service: &RetrievalService<B>,
     stream: &mut TcpStream,
 ) -> Result<(), RetrievalError> {
     let Some(request) = read_request(stream)? else {
@@ -59,7 +57,7 @@ fn handle_connection(
     Ok(())
 }
 
-fn route_request(service: &RetrievalService, request: HttpRequest) -> HttpResponse {
+fn route_request<B: Backend>(service: &RetrievalService<B>, request: HttpRequest) -> HttpResponse {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => html_response(render_home(service, None)),
         ("GET", "/health") => HttpResponse::ok(
@@ -94,7 +92,7 @@ fn route_request(service: &RetrievalService, request: HttpRequest) -> HttpRespon
 }
 
 fn sample_search_from_query(
-    service: &RetrievalService,
+    service: &RetrievalService<impl Backend>,
     query: &BTreeMap<String, String>,
 ) -> Result<(Vec<SearchHit>, String, usize), RetrievalError> {
     let sample = query
@@ -115,7 +113,7 @@ fn sample_search_from_query(
 }
 
 fn upload_search(
-    service: &RetrievalService,
+    service: &RetrievalService<impl Backend>,
     request: &HttpRequest,
 ) -> Result<(Vec<SearchHit>, String, usize), RetrievalError> {
     let content_type = request
@@ -171,7 +169,7 @@ fn image_response_by_index(index: &CandidateIndex, path: &str, prefix: &str) -> 
     file_response(&entry.glyph_path)
 }
 
-fn sample_image_response(service: &RetrievalService, path: &str) -> HttpResponse {
+fn sample_image_response(service: &RetrievalService<impl Backend>, path: &str) -> HttpResponse {
     let sample_index = match path
         .strip_prefix("/sample/")
         .and_then(|value| value.parse::<usize>().ok())
@@ -192,7 +190,7 @@ fn file_response(path: &Path) -> HttpResponse {
     }
 }
 
-fn render_home(service: &RetrievalService, error: Option<&str>) -> String {
+fn render_home(service: &RetrievalService<impl Backend>, error: Option<&str>) -> String {
     let sample_count = service.dataset.len();
     let candidate_count = service.index.entries.len();
     let top_k = service.default_top_k;
@@ -298,7 +296,7 @@ fn render_home(service: &RetrievalService, error: Option<&str>) -> String {
 }
 
 fn render_results(
-    service: &RetrievalService,
+    service: &RetrievalService<impl Backend>,
     hits: &[SearchHit],
     source: &str,
     top_k: usize,

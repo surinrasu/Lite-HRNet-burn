@@ -3,27 +3,33 @@ use std::{
     fmt::{Display, Formatter},
     fs,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver},
+    thread,
     time::Instant,
 };
 
 use burn::{
-    module::Module,
+    module::{AutodiffModule, Module},
     optim::{AdamConfig, GradientsParams, Optimizer},
+    prelude::Backend,
     record::DefaultRecorder,
     tensor::{Distribution, ElementConversion, Tensor, backend::AutodiffBackend},
 };
 use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 use serde::Serialize;
 
-use crate::{CocoPoseDataset, LiteHrNetPose, LiteHrNetPoseConfig, PoseDataError, joints_mse_loss};
+use crate::{
+    CocoPoseDataset, LiteHrNetPose, LiteHrNetPoseConfig, PoseDataError, PoseTensorBatch,
+    joints_mse_loss,
+};
 
-pub struct PoseBatch<B: AutodiffBackend> {
+pub struct PoseBatch<B: Backend> {
     pub images: Tensor<B, 4>,
     pub targets: Tensor<B, 4>,
     pub target_weight: Tensor<B, 3>,
 }
 
-pub fn synthetic_pose_batch<B: AutodiffBackend>(
+pub fn synthetic_pose_batch<B: Backend>(
     batch_size: usize,
     image_height: usize,
     image_width: usize,
@@ -67,9 +73,23 @@ where
     B: AutodiffBackend,
     O: Optimizer<LiteHrNetPose<B>, B>,
 {
+    let (model, loss) = train_step_with_loss_tensor(model, optimizer, batch, learning_rate);
+    (model, loss_to_f64(loss))
+}
+
+pub fn train_step_with_loss_tensor<B, O>(
+    model: LiteHrNetPose<B>,
+    optimizer: &mut O,
+    batch: PoseBatch<B>,
+    learning_rate: f64,
+) -> (LiteHrNetPose<B>, Tensor<B, 1>)
+where
+    B: AutodiffBackend,
+    O: Optimizer<LiteHrNetPose<B>, B>,
+{
     let predictions = model.forward(batch.images);
     let loss = joints_mse_loss(predictions, batch.targets, Some(batch.target_weight));
-    let loss_value = loss.clone().into_scalar().elem::<f64>();
+    let loss_value = loss.clone().detach();
     let grads = loss.backward();
     let grads = GradientsParams::from_grads(grads, &model);
     (optimizer.step(learning_rate, model, grads), loss_value)
@@ -114,6 +134,7 @@ pub struct PoseTrainingConfig {
     pub checkpoint_dir: PathBuf,
     pub log_every: usize,
     pub save_every_epoch: bool,
+    pub prefetch_batches: usize,
 }
 
 impl PoseTrainingConfig {
@@ -130,6 +151,7 @@ impl PoseTrainingConfig {
             checkpoint_dir: checkpoint_dir.into(),
             log_every: 50,
             save_every_epoch: true,
+            prefetch_batches: 0,
         }
     }
 }
@@ -229,35 +251,59 @@ where
             indices.shuffle(&mut rng);
         }
 
-        let mut train_loss_sum = 0.0;
+        let mut train_loss_sum = None;
         let mut train_batches = 0;
         let mut train_samples = 0;
 
-        for batch_indices in indices.chunks(config.batch_size) {
-            let batch = train_dataset.batch::<B>(batch_indices, device)?;
+        let mut batch_loader = TensorBatchLoader::new(
+            &train_dataset,
+            &indices,
+            config.batch_size,
+            config.prefetch_batches,
+        );
+
+        while let Some(tensor_batch) = batch_loader.next_batch()? {
+            let batch_samples = tensor_batch.len();
+            let batch = tensor_batch.into_pose_batch::<B>(device);
             let (updated_model, loss) =
-                train_step_with_loss(model, &mut optimizer, batch, config.learning_rate);
+                train_step_with_loss_tensor(model, &mut optimizer, batch, config.learning_rate);
             model = updated_model;
-            train_loss_sum += loss * batch_indices.len() as f64;
+            train_loss_sum = Some(accumulate_weighted_loss(
+                train_loss_sum,
+                loss,
+                batch_samples,
+            ));
             train_batches += 1;
-            train_samples += batch_indices.len();
+            train_samples += batch_samples;
 
             if config.log_every > 0 && train_batches % config.log_every == 0 {
+                let train_loss = average_loss(
+                    train_loss_sum
+                        .as_ref()
+                        .expect("training loss exists after first batch"),
+                    train_samples,
+                );
                 progress(PoseTrainingProgress::Batch(BatchTrainingProgress {
                     epoch,
                     train_batches,
                     train_samples,
-                    train_loss: train_loss_sum / train_samples as f64,
+                    train_loss,
                 }));
             }
         }
 
-        let train_loss = train_loss_sum / train_samples as f64;
+        let train_loss = average_loss(
+            train_loss_sum
+                .as_ref()
+                .expect("training loss exists after first batch"),
+            train_samples,
+        );
         let val_loss = match &val_dataset {
-            Some(dataset) => Some(evaluate_dataset(
-                &model,
+            Some(dataset) => Some(evaluate_dataset_inner(
+                &model.valid(),
                 dataset,
                 config.batch_size,
+                config.prefetch_batches,
                 device,
             )?),
             None => None,
@@ -300,6 +346,16 @@ pub fn evaluate_dataset<B: AutodiffBackend>(
     batch_size: usize,
     device: &B::Device,
 ) -> Result<f64, PoseTrainError> {
+    evaluate_dataset_inner(&model.valid(), dataset, batch_size, 0, device)
+}
+
+fn evaluate_dataset_inner<B: Backend>(
+    model: &LiteHrNetPose<B>,
+    dataset: &CocoPoseDataset,
+    batch_size: usize,
+    prefetch_batches: usize,
+    device: &B::Device,
+) -> Result<f64, PoseTrainError> {
     if batch_size == 0 {
         return Err(PoseTrainError::InvalidConfig(
             "batch_size must be greater than zero".to_string(),
@@ -312,18 +368,135 @@ pub fn evaluate_dataset<B: AutodiffBackend>(
     }
 
     let indices = (0..dataset.len()).collect::<Vec<_>>();
-    let mut loss_sum = 0.0;
+    let mut loss_sum = None;
     let mut samples = 0;
 
-    for batch_indices in indices.chunks(batch_size) {
-        let batch = dataset.batch::<B>(batch_indices, device)?;
+    let mut batch_loader = TensorBatchLoader::new(dataset, &indices, batch_size, prefetch_batches);
+    while let Some(tensor_batch) = batch_loader.next_batch()? {
+        let batch_samples = tensor_batch.len();
+        let batch = tensor_batch.into_pose_batch::<B>(device);
         let predictions = model.forward(batch.images);
         let loss = joints_mse_loss(predictions, batch.targets, Some(batch.target_weight));
-        loss_sum += loss.into_scalar().elem::<f64>() * batch_indices.len() as f64;
-        samples += batch_indices.len();
+        loss_sum = Some(accumulate_weighted_loss(
+            loss_sum,
+            loss.detach(),
+            batch_samples,
+        ));
+        samples += batch_samples;
     }
 
-    Ok(loss_sum / samples as f64)
+    Ok(average_loss(
+        loss_sum
+            .as_ref()
+            .expect("validation loss exists after first batch"),
+        samples,
+    ))
+}
+
+fn accumulate_weighted_loss<B: Backend>(
+    loss_sum: Option<Tensor<B, 1>>,
+    loss: Tensor<B, 1>,
+    samples: usize,
+) -> Tensor<B, 1> {
+    let weighted = loss * samples as f64;
+    match loss_sum {
+        Some(loss_sum) => loss_sum + weighted,
+        None => weighted,
+    }
+}
+
+fn average_loss<B: Backend>(loss_sum: &Tensor<B, 1>, samples: usize) -> f64 {
+    loss_to_f64(loss_sum.clone() / samples as f64)
+}
+
+fn loss_to_f64<B: Backend>(loss: Tensor<B, 1>) -> f64 {
+    loss.into_scalar().elem::<f64>()
+}
+
+enum TensorBatchLoader<'a> {
+    Direct {
+        dataset: &'a CocoPoseDataset,
+        chunks: std::slice::Chunks<'a, usize>,
+    },
+    Prefetch(PrefetchedTensorBatches),
+}
+
+impl<'a> TensorBatchLoader<'a> {
+    fn new(
+        dataset: &'a CocoPoseDataset,
+        indices: &'a [usize],
+        batch_size: usize,
+        prefetch_batches: usize,
+    ) -> Self {
+        if prefetch_batches == 0 {
+            Self::Direct {
+                dataset,
+                chunks: indices.chunks(batch_size),
+            }
+        } else {
+            Self::Prefetch(PrefetchedTensorBatches::new(
+                dataset.clone(),
+                indices.to_vec(),
+                batch_size,
+                prefetch_batches,
+            ))
+        }
+    }
+
+    fn next_batch(&mut self) -> Result<Option<PoseTensorBatch>, PoseTrainError> {
+        match self {
+            Self::Direct { dataset, chunks } => match chunks.next() {
+                Some(indices) => Ok(Some(dataset.load_tensor_batch(indices)?)),
+                None => Ok(None),
+            },
+            Self::Prefetch(prefetch) => prefetch.next_batch(),
+        }
+    }
+}
+
+struct PrefetchedTensorBatches {
+    receiver: Receiver<Result<PoseTensorBatch, PoseDataError>>,
+    remaining: usize,
+}
+
+impl PrefetchedTensorBatches {
+    fn new(
+        dataset: CocoPoseDataset,
+        indices: Vec<usize>,
+        batch_size: usize,
+        prefetch_batches: usize,
+    ) -> Self {
+        let total_batches = indices.len().div_ceil(batch_size);
+        let (sender, receiver) = mpsc::sync_channel(prefetch_batches);
+
+        thread::spawn(move || {
+            for batch_indices in indices.chunks(batch_size) {
+                let result = dataset.load_tensor_batch(batch_indices);
+                let is_error = result.is_err();
+                if sender.send(result).is_err() || is_error {
+                    break;
+                }
+            }
+        });
+
+        Self {
+            receiver,
+            remaining: total_batches,
+        }
+    }
+
+    fn next_batch(&mut self) -> Result<Option<PoseTensorBatch>, PoseTrainError> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+
+        self.remaining -= 1;
+        let batch = self
+            .receiver
+            .recv()
+            .map_err(|_| PoseTrainError::Prefetch("batch prefetch worker stopped".to_string()))??;
+        Ok(Some(batch))
+    }
 }
 
 fn save_model_checkpoint<B: AutodiffBackend>(
@@ -351,6 +524,7 @@ pub enum PoseTrainError {
     Json(json::Error),
     Recorder(burn::record::RecorderError),
     InvalidConfig(String),
+    Prefetch(String),
 }
 
 impl Display for PoseTrainError {
@@ -361,6 +535,7 @@ impl Display for PoseTrainError {
             Self::Json(error) => write!(formatter, "json error: {error}"),
             Self::Recorder(error) => write!(formatter, "recorder error: {error}"),
             Self::InvalidConfig(message) => write!(formatter, "invalid config: {message}"),
+            Self::Prefetch(message) => write!(formatter, "prefetch error: {message}"),
         }
     }
 }
