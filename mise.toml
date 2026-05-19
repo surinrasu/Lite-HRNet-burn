@@ -4,6 +4,43 @@
 "pipx:kaggle" = "latest"
 rust = { version = "latest", components = "cargo,rust-analyzer" }
 
+[tasks."assets:retrieval"]
+description = "Update local browser assets for the retrieval UI"
+run = '''
+set -eu
+
+ASSET_DIR="${ASSET_DIR:-assets/retrieval}"
+MATERIAL_FONT_URL="https://fonts.gstatic.com/s/materialsymbolsoutlined/v338/kJF1BvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzByHX9rA6RzaxHMPdY43zj-jCxv3fzvRNU22ZXGJpEpjC_1v-p_4MrImHCIJIZrDCvHOem.ttf"
+
+mkdir -p "${ASSET_DIR}"
+curl -fL -o "${ASSET_DIR}/beer.min.css" "https://cdn.jsdelivr.net/npm/beercss/dist/cdn/beer.min.css"
+curl -fL -o "${ASSET_DIR}/beer.min.js" "https://cdn.jsdelivr.net/npm/beercss/dist/cdn/beer.min.js"
+curl -fL -o "${ASSET_DIR}/material-symbols-outlined.ttf" "${MATERIAL_FONT_URL}"
+
+cat > "${ASSET_DIR}/material-symbols.css" <<'CSS'
+@font-face {
+  font-family: "Material Symbols Outlined";
+  font-style: normal;
+  font-weight: 400;
+  src: url("/assets/retrieval/material-symbols-outlined.ttf") format("truetype");
+}
+
+.material-symbols-outlined {
+  direction: ltr;
+  display: inline-block;
+  font-family: "Material Symbols Outlined";
+  font-size: 24px;
+  font-style: normal;
+  font-weight: normal;
+  letter-spacing: normal;
+  line-height: 1;
+  text-transform: none;
+  white-space: nowrap;
+  word-wrap: normal;
+}
+CSS
+'''
+
 [tasks."data:coco2017"]
 description = "Download COCO 2017 dataset"
 run = '''

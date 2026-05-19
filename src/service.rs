@@ -15,6 +15,12 @@ use crate::{
     search_index,
 };
 
+const BEER_CSS: &[u8] = include_bytes!("../assets/retrieval/beer.min.css");
+const BEER_JS: &[u8] = include_bytes!("../assets/retrieval/beer.min.js");
+const MATERIAL_SYMBOLS_CSS: &[u8] = include_bytes!("../assets/retrieval/material-symbols.css");
+const MATERIAL_SYMBOLS_FONT: &[u8] =
+    include_bytes!("../assets/retrieval/material-symbols-outlined.ttf");
+
 pub struct RetrievalService<B: Backend> {
     pub model: RetrievalModel<B>,
     pub index: CandidateIndex,
@@ -60,6 +66,18 @@ fn handle_connection<B: Backend>(
 fn route_request<B: Backend>(service: &RetrievalService<B>, request: HttpRequest) -> HttpResponse {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => html_response(render_home(service, None)),
+        ("GET", "/assets/retrieval/beer.min.css") => {
+            static_response("text/css; charset=utf-8", BEER_CSS)
+        }
+        ("GET", "/assets/retrieval/beer.min.js") => {
+            static_response("application/javascript; charset=utf-8", BEER_JS)
+        }
+        ("GET", "/assets/retrieval/material-symbols.css") => {
+            static_response("text/css; charset=utf-8", MATERIAL_SYMBOLS_CSS)
+        }
+        ("GET", "/assets/retrieval/material-symbols-outlined.ttf") => {
+            static_response("font/ttf", MATERIAL_SYMBOLS_FONT)
+        }
         ("GET", "/health") => HttpResponse::ok(
             "application/json; charset=utf-8",
             format!(
@@ -202,9 +220,9 @@ fn render_home(service: &RetrievalService<impl Backend>, error: Option<&str>) ->
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined";
-                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/beercss/dist/cdn/beer.min.css";
-                script type="module" src="https://cdn.jsdelivr.net/npm/beercss/dist/cdn/beer.min.js" {}
+                link rel="stylesheet" href="/assets/retrieval/material-symbols.css";
+                link rel="stylesheet" href="/assets/retrieval/beer.min.css";
+                script type="module" src="/assets/retrieval/beer.min.js" {}
                 style { (Raw::dangerously_create(APP_CSS)) }
                 title { "Oracle Pose Retrieval" }
             }
@@ -310,9 +328,9 @@ fn render_results(
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined";
-                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/beercss/dist/cdn/beer.min.css";
-                script type="module" src="https://cdn.jsdelivr.net/npm/beercss/dist/cdn/beer.min.js" {}
+                link rel="stylesheet" href="/assets/retrieval/material-symbols.css";
+                link rel="stylesheet" href="/assets/retrieval/beer.min.css";
+                script type="module" src="/assets/retrieval/beer.min.js" {}
                 style { (Raw::dangerously_create(APP_CSS)) }
                 title { "Oracle Pose Retrieval" }
             }
@@ -360,6 +378,7 @@ fn render_results(
 
 const APP_CSS: &str = r#"
 main.max { max-width: 1180px; padding-top: 1rem; }
+i { font-family: "Material Symbols Outlined"; font-weight: normal; font-style: normal; line-height: 1; letter-spacing: normal; text-transform: none; display: inline-block; white-space: nowrap; }
 .app-bar { min-height: 4.25rem; display: flex; align-items: center; gap: 1rem; padding: 0 1rem; margin-bottom: 1rem; border-radius: .5rem; background: var(--surface-container); overflow: hidden; }
 .app-bar h5 { margin: 0; line-height: 1.15; }
 .back-link { width: 2.75rem; height: 2.75rem; flex: 0 0 2.75rem; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: var(--on-surface); text-decoration: none; }
@@ -427,6 +446,10 @@ impl HttpResponse {
 
 fn html_response(body: String) -> HttpResponse {
     HttpResponse::ok("text/html; charset=utf-8", body.into_bytes())
+}
+
+fn static_response(content_type: &'static str, body: &'static [u8]) -> HttpResponse {
+    HttpResponse::ok(content_type, body.to_vec())
 }
 
 fn error_response(status: u16, message: &str) -> HttpResponse {
