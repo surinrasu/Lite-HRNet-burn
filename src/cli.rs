@@ -1155,6 +1155,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_retrieval_backend_argument() {
+        let cli = Cli::parse_from([
+            "lite-hrnet-burn",
+            "retrieval",
+            "search",
+            "--backend",
+            "metal",
+            "--sample",
+            "1",
+        ]);
+
+        let Command::Retrieval(args) = cli.command else {
+            panic!("expected retrieval command");
+        };
+        let RetrievalCommand::Search(args) = args.command else {
+            panic!("expected retrieval search command");
+        };
+        assert_eq!(args.backend, BackendArg::Metal);
+        assert_eq!(args.sample, Some(1));
+    }
+
+    #[test]
     fn rejects_invalid_input_size() {
         let error = Cli::try_parse_from(["lite-hrnet-burn", "smoke", "--input-size", "64"])
             .expect_err("invalid input size should fail");

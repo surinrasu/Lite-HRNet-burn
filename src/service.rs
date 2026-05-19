@@ -699,3 +699,55 @@ fn image_content_type(path: &Path) -> &'static str {
         _ => "image/png",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urlencoded_parser_decodes_common_form_values() {
+        let parsed = parse_urlencoded("sample=12&name=oracle+pose&encoded=%E7%94%B2");
+
+        assert_eq!(parsed.get("sample").map(String::as_str), Some("12"));
+        assert_eq!(parsed.get("name").map(String::as_str), Some("oracle pose"));
+        assert_eq!(parsed.get("encoded").map(String::as_str), Some("甲"));
+    }
+
+    #[test]
+    fn multipart_parser_extracts_fields_and_files() {
+        let body = concat!(
+            "--boundary\r\n",
+            "Content-Disposition: form-data; name=\"k\"\r\n\r\n",
+            "3\r\n",
+            "--boundary\r\n",
+            "Content-Disposition: form-data; name=\"image\"; filename=\"pose.png\"\r\n",
+            "Content-Type: image/png\r\n\r\n",
+            "png-bytes\r\n",
+            "--boundary--\r\n"
+        );
+
+        let form = parse_multipart(body.as_bytes(), "boundary").expect("multipart form");
+
+        assert_eq!(form.fields.get("k").map(String::as_str), Some("3"));
+        assert_eq!(
+            form.files.get("image").map(Vec::as_slice),
+            Some(&b"png-bytes"[..])
+        );
+    }
+
+    #[test]
+    fn top_k_is_positive_and_capped() {
+        assert_eq!(parse_top_k(Some(&"0".to_string()), 8), 8);
+        assert_eq!(parse_top_k(Some(&"100".to_string()), 8), 50);
+        assert_eq!(parse_top_k(Some(&"7".to_string()), 8), 7);
+    }
+
+    #[test]
+    fn static_asset_response_uses_embedded_body() {
+        let response = static_response("text/css", MATERIAL_SYMBOLS_CSS);
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "text/css");
+        assert!(response.body.starts_with(b"@font-face"));
+    }
+}
