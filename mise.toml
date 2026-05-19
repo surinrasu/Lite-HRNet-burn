@@ -1,0 +1,141 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[tools]
+"pipx:kaggle" = "latest"
+rust = { version = "latest", components = "cargo,rust-analyzer" }
+
+[tasks."data:coco2017"]
+description = "Download COCO 2017 dataset"
+run = '''
+set -eu
+
+DATA_DIR="${DATA_DIR:-data/coco}"
+KAGGLE_DATASET="${KAGGLE_DATASET:-awsaf49/coco-2017-dataset}"
+DOWNLOAD_DIR="${DATA_DIR}/.kaggle-download"
+
+mkdir -p "${DATA_DIR}" "${DOWNLOAD_DIR}"
+
+echo "Downloading ${KAGGLE_DATASET}..."
+kaggle datasets download -d "${KAGGLE_DATASET}" -p "${DOWNLOAD_DIR}" --unzip
+
+COCO_ROOT=""
+for candidate in \
+  "${DOWNLOAD_DIR}/coco2017" \
+  "${DOWNLOAD_DIR}/coco-2017-dataset/coco2017" \
+  "${DOWNLOAD_DIR}"
+do
+  if [ -d "${candidate}/annotations" ] && { [ -d "${candidate}/train2017" ] || [ -d "${candidate}/images/train2017" ]; }; then
+    COCO_ROOT="${candidate}"
+    break
+  fi
+done
+
+if [ -z "${COCO_ROOT}" ]; then
+  echo "Downloaded data did not contain a recognizable COCO 2017 layout."
+  echo "Expected annotations plus train2017/val2017 under ${DOWNLOAD_DIR}."
+  exit 1
+fi
+
+IMAGE_ROOT="${COCO_ROOT}"
+if [ -d "${COCO_ROOT}/images/train2017" ]; then
+  IMAGE_ROOT="${COCO_ROOT}/images"
+fi
+
+place_dir() {
+  src="$1"
+  dst="$2"
+
+  if [ -d "${dst}" ]; then
+    echo "Keeping existing ${dst}"
+    return
+  fi
+
+  if [ ! -d "${src}" ]; then
+    echo "Missing expected directory: ${src}"
+    exit 1
+  fi
+
+  mv "${src}" "${dst}"
+}
+
+place_dir "${IMAGE_ROOT}/train2017" "${DATA_DIR}/train2017"
+place_dir "${IMAGE_ROOT}/val2017" "${DATA_DIR}/val2017"
+place_dir "${COCO_ROOT}/annotations" "${DATA_DIR}/annotations"
+
+for required in \
+  "${DATA_DIR}/train2017" \
+  "${DATA_DIR}/val2017" \
+  "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
+  "${DATA_DIR}/annotations/person_keypoints_val2017.json"
+do
+  if [ ! -e "${required}" ]; then
+    echo "Missing required COCO file or directory: ${required}"
+    exit 1
+  fi
+done
+
+echo "COCO 2017 is ready under ${DATA_DIR}"
+echo "Train with:"
+echo "  mise run train:coco2017"
+'''
+
+[tasks."train:coco2017"]
+description = "Train on COCO 2017"
+run = '''
+set -eu
+
+DATA_DIR="${DATA_DIR:-data/coco}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/coco2017}"
+
+for required in \
+  "${DATA_DIR}/train2017" \
+  "${DATA_DIR}/val2017" \
+  "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
+  "${DATA_DIR}/annotations/person_keypoints_val2017.json"
+do
+  if [ ! -e "${required}" ]; then
+    echo "Missing required COCO file or directory: ${required}"
+    echo "Run first: mise run data:coco2017"
+    exit 1
+  fi
+done
+
+cargo run --release -- train \
+  --annotations "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
+  --images "${DATA_DIR}/train2017" \
+  --validation-annotations "${DATA_DIR}/annotations/person_keypoints_val2017.json" \
+  --validation-images "${DATA_DIR}/val2017" \
+  --output-dir "${OUTPUT_DIR}" \
+  "$@"
+'''
+
+[tasks."train:coco2017:metal"]
+description = "Train on COCO 2017 with Metal"
+run = '''
+set -eu
+
+DATA_DIR="${DATA_DIR:-data/coco}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/coco2017}"
+
+for required in \
+  "${DATA_DIR}/train2017" \
+  "${DATA_DIR}/val2017" \
+  "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
+  "${DATA_DIR}/annotations/person_keypoints_val2017.json"
+do
+  if [ ! -e "${required}" ]; then
+    echo "Missing required COCO file or directory: ${required}"
+    echo "Run first: mise run data:coco2017"
+    exit 1
+  fi
+done
+
+cargo run --release --features metal -- train \
+  --backend metal \
+  --annotations "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
+  --images "${DATA_DIR}/train2017" \
+  --validation-annotations "${DATA_DIR}/annotations/person_keypoints_val2017.json" \
+  --validation-images "${DATA_DIR}/val2017" \
+  --output-dir "${OUTPUT_DIR}" \
+  "$@"
+'''
