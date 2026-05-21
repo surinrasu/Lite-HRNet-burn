@@ -622,6 +622,8 @@ impl<B: Backend> LiteHrNet<B> {
     }
 }
 
+pub const DEFAULT_POSE_JOINTS: usize = 37;
+
 #[derive(Clone, Debug)]
 pub struct LiteHrNetPoseConfig {
     pub backbone: LiteHrNetConfig,
@@ -632,14 +634,14 @@ impl LiteHrNetPoseConfig {
     pub fn litehrnet18_coco() -> Self {
         Self {
             backbone: LiteHrNetConfig::litehrnet18_coco(),
-            num_joints: 17,
+            num_joints: DEFAULT_POSE_JOINTS,
         }
     }
 
     pub fn litehrnet30_coco() -> Self {
         Self {
             backbone: LiteHrNetConfig::litehrnet30_coco(),
-            num_joints: 17,
+            num_joints: DEFAULT_POSE_JOINTS,
         }
     }
 

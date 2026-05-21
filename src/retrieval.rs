@@ -1,7 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
-    error::Error,
-    fmt::{Display, Formatter},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     time::Instant,
@@ -21,13 +19,25 @@ use image::{DynamicImage, GenericImageView, ImageReader};
 use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const RETRIEVAL_KEYPOINTS: usize = 30;
-pub const RETRIEVAL_FEATURE_DIM: usize = RETRIEVAL_KEYPOINTS * 3;
+use crate::pose_estimation::{
+    DefaultPoseEstimator, SPINEPOSE_FEATURE_DIM, SPINEPOSE_KEYPOINTS,
+    estimate_pose_features_from_bytes, estimate_pose_features_from_path,
+};
+
+mod error;
+mod index;
+
+pub use error::*;
+pub use index::*;
+
+pub const RETRIEVAL_KEYPOINTS: usize = SPINEPOSE_KEYPOINTS;
+pub const RETRIEVAL_FEATURE_DIM: usize = SPINEPOSE_FEATURE_DIM;
 pub const DEFAULT_RETRIEVAL_HIDDEN_DIM: usize = 128;
 pub const DEFAULT_RETRIEVAL_EMBEDDING_DIM: usize = 64;
+pub const CANDIDATE_INDEX_VERSION: u32 = 1;
 
-const FEATURE_BANDS: usize = 10;
 const FEATURE_POINTS_PER_BAND: usize = 3;
+const FEATURE_BANDS: usize = RETRIEVAL_KEYPOINTS.div_ceil(FEATURE_POINTS_PER_BAND);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RetrievalPair {
@@ -175,22 +185,8 @@ impl GlyphCandidate {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ShapePoseEstimator;
-
-pub trait PoseFeatureEstimator {
-    fn estimate_pose_features(&self, image: &DynamicImage) -> Result<Vec<f32>, RetrievalError>;
-}
-
-impl PoseFeatureEstimator for ShapePoseEstimator {
-    fn estimate_pose_features(&self, image: &DynamicImage) -> Result<Vec<f32>, RetrievalError> {
-        Ok(extract_shape_features(image))
-    }
-}
-
 pub fn extract_pose_features_from_path(path: impl AsRef<Path>) -> Result<Vec<f32>, RetrievalError> {
-    let image = ImageReader::open(path)?.decode()?;
-    ShapePoseEstimator.estimate_pose_features(&image)
+    estimate_pose_features_from_path(path)
 }
 
 pub fn extract_glyph_features_from_path(
@@ -201,11 +197,10 @@ pub fn extract_glyph_features_from_path(
 }
 
 pub fn extract_pose_features_from_bytes(bytes: &[u8]) -> Result<Vec<f32>, RetrievalError> {
-    let image = image::load_from_memory(bytes)?;
-    ShapePoseEstimator.estimate_pose_features(&image)
+    estimate_pose_features_from_bytes(bytes)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RetrievalModelConfig {
     pub input_dim: usize,
     pub hidden_dim: usize,
@@ -481,86 +476,13 @@ pub fn load_retrieval_model_config(
     read_json_file(path)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CandidateIndex {
-    pub version: u32,
-    pub model: RetrievalModelConfig,
-    pub entries: Vec<CandidateEntry>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CandidateEntry {
-    pub id: String,
-    pub codepoint: Option<String>,
-    pub character: Option<String>,
-    pub persona: String,
-    pub glyph_path: PathBuf,
-    pub embedding: Vec<f32>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SearchHit {
-    pub index: usize,
-    pub entry: CandidateEntry,
-    pub score: f32,
-}
-
-pub fn build_candidate_index<B: Backend>(
-    model: &RetrievalModel<B>,
-    model_config: RetrievalModelConfig,
-    dataset: &RetrievalPairDataset,
-    unique_by_id: bool,
-    device: &B::Device,
-) -> Result<CandidateIndex, RetrievalError> {
-    let mut entries = Vec::new();
-    let mut seen_paths = HashSet::new();
-
-    for candidate in dataset.glyph_candidates(unique_by_id) {
-        if !seen_paths.insert(candidate.glyph_path.clone()) {
-            continue;
-        }
-        let features = extract_glyph_features_from_path(&candidate.glyph_path)?;
-        let embedding = encode_glyph_features(model, &features, device)?;
-        entries.push(CandidateEntry {
-            id: candidate.id,
-            codepoint: candidate.codepoint,
-            character: candidate.character,
-            persona: candidate.persona,
-            glyph_path: candidate.glyph_path,
-            embedding,
-        });
-    }
-
-    if entries.is_empty() {
-        return Err(RetrievalError::InvalidData(
-            "candidate index would be empty".to_string(),
-        ));
-    }
-
-    Ok(CandidateIndex {
-        version: 1,
-        model: model_config,
-        entries,
-    })
-}
-
-pub fn write_candidate_index(
-    path: impl AsRef<Path>,
-    index: &CandidateIndex,
-) -> Result<(), RetrievalError> {
-    write_json_file(path, index)
-}
-
-pub fn read_candidate_index(path: impl AsRef<Path>) -> Result<CandidateIndex, RetrievalError> {
-    read_json_file(path)
-}
-
 pub fn encode_pose_features<B: Backend>(
     model: &RetrievalModel<B>,
     features: &[f32],
     device: &B::Device,
 ) -> Result<Vec<f32>, RetrievalError> {
     ensure_feature_dim(features.len(), model.config.input_dim)?;
+    ensure_finite_values("pose feature", features)?;
     let input = Tensor::<B, 2>::from_data(
         TensorData::new(features.to_vec(), [1, model.config.input_dim]),
         device,
@@ -574,31 +496,12 @@ pub fn encode_glyph_features<B: Backend>(
     device: &B::Device,
 ) -> Result<Vec<f32>, RetrievalError> {
     ensure_feature_dim(features.len(), model.config.input_dim)?;
+    ensure_finite_values("glyph feature", features)?;
     let input = Tensor::<B, 2>::from_data(
         TensorData::new(features.to_vec(), [1, model.config.input_dim]),
         device,
     );
     tensor_to_vec(model.forward_glyph(input))
-}
-
-pub fn search_index(
-    index: &CandidateIndex,
-    query_embedding: &[f32],
-    top_k: usize,
-) -> Vec<SearchHit> {
-    let mut hits = index
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(entry_index, entry)| SearchHit {
-            index: entry_index,
-            entry: entry.clone(),
-            score: dot(query_embedding, &entry.embedding),
-        })
-        .collect::<Vec<_>>();
-    hits.sort_by(|left, right| right.score.total_cmp(&left.score));
-    hits.truncate(top_k.min(hits.len()));
-    hits
 }
 
 pub fn resolve_existing_data_root(data_root: &Path) -> Result<PathBuf, RetrievalError> {
@@ -638,7 +541,8 @@ fn load_feature_pairs(
         .iter()
         .map(|pair| {
             Ok(FeaturePair {
-                pose: extract_pose_features_from_path(&pair.image_path)?,
+                pose: DefaultPoseEstimator::default()
+                    .estimate_pose_features_from_path(&pair.image_path)?,
                 glyph: extract_glyph_features_from_path(&pair.glyph_path)?,
             })
         })
@@ -763,6 +667,7 @@ fn extract_shape_features(image: &DynamicImage) -> Vec<f32> {
     let scale = bbox_width.max(bbox_height).max(1.0);
 
     let mut features = Vec::with_capacity(RETRIEVAL_FEATURE_DIM);
+    let mut points_written = 0usize;
     for band in 0..FEATURE_BANDS {
         let band_top = min_y as f32 + bbox_height * band as f32 / FEATURE_BANDS as f32;
         let band_bottom = min_y as f32 + bbox_height * (band + 1) as f32 / FEATURE_BANDS as f32;
@@ -822,9 +727,13 @@ fn extract_shape_features(image: &DynamicImage) -> Vec<f32> {
         };
 
         for (x, y, confidence) in points.into_iter().take(FEATURE_POINTS_PER_BAND) {
+            if points_written >= RETRIEVAL_KEYPOINTS {
+                break;
+            }
             features.push(((x - center_x) / scale).clamp(-1.5, 1.5));
             features.push(((y - center_y) / scale).clamp(-1.5, 1.5));
             features.push(confidence);
+            points_written += 1;
         }
     }
 
@@ -903,11 +812,14 @@ fn ensure_feature_dim(actual: usize, expected: usize) -> Result<(), RetrievalErr
     }
 }
 
-fn dot(left: &[f32], right: &[f32]) -> f32 {
-    left.iter()
-        .zip(right.iter())
-        .map(|(left, right)| left * right)
-        .sum()
+fn ensure_finite_values(label: &str, values: &[f32]) -> Result<(), RetrievalError> {
+    if let Some(index) = values.iter().position(|value| !value.is_finite()) {
+        Err(RetrievalError::InvalidData(format!(
+            "{label} at index {index} is not finite"
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 fn is_png(path: &Path) -> bool {
@@ -964,49 +876,6 @@ fn write_json_file<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Result<()
 fn read_json_file<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, RetrievalError> {
     let mut contents = fs::read(path)?;
     Ok(json::from_slice(&mut contents)?)
-}
-
-#[derive(Debug)]
-pub enum RetrievalError {
-    Io(std::io::Error),
-    Image(image::ImageError),
-    Json(json::Error),
-    Recorder(ann::record::RecorderError),
-    InvalidData(String),
-    Tensor(String),
-}
-
-impl Display for RetrievalError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(error) => write!(formatter, "io error: {error}"),
-            Self::Image(error) => write!(formatter, "image error: {error}"),
-            Self::Json(error) => write!(formatter, "json error: {error}"),
-            Self::Recorder(error) => write!(formatter, "recorder error: {error}"),
-            Self::InvalidData(message) => write!(formatter, "invalid data: {message}"),
-            Self::Tensor(message) => write!(formatter, "tensor error: {message}"),
-        }
-    }
-}
-
-impl Error for RetrievalError {}
-
-impl From<std::io::Error> for RetrievalError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<image::ImageError> for RetrievalError {
-    fn from(value: image::ImageError) -> Self {
-        Self::Image(value)
-    }
-}
-
-impl From<json::Error> for RetrievalError {
-    fn from(value: json::Error) -> Self {
-        Self::Json(value)
-    }
 }
 
 extern crate ann as burn;

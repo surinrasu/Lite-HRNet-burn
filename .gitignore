@@ -1,4 +1,10 @@
 /target/
 /runs/
 .DS_Store
-data
+/data/*
+!/data/pose-obc/
+/data/pose-obc/*
+!/data/pose-obc/.gitattributes
+assets/models/
+.spinepose-home/
+.spinepose-home

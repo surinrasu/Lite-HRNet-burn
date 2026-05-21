@@ -5,10 +5,12 @@ use std::{
 
 use ann::backend::{Autodiff, Flex};
 use image::{Rgb, RgbImage};
+use json::{OwnedValue, json};
 use pose_obc_retrieval::{
-    RetrievalModelConfig, RetrievalPairDataset, RetrievalTrainingConfig, build_candidate_index,
-    extract_glyph_features_from_path, extract_pose_features_from_path, read_candidate_index,
-    search_index, train_retrieval_dataset, write_candidate_index,
+    CandidateEntry, CandidateIndex, RetrievalModelConfig, RetrievalPairDataset,
+    RetrievalTrainingConfig, build_candidate_index, extract_glyph_features_from_path,
+    extract_pose_features_from_path, read_candidate_index, search_index, train_retrieval_dataset,
+    write_candidate_index,
 };
 
 type AB = Autodiff<Flex>;
@@ -37,16 +39,45 @@ fn write_fixture_image(path: &Path, variant: u8) {
     image.save(path).expect("fixture image save");
 }
 
+fn write_fixture_pose(path: &Path, variant: u8) {
+    let mut keypoints = vec![0.0; 37 * 3];
+    for joint in 0..37 {
+        let offset = joint * 3;
+        keypoints[offset] = if variant == 0 {
+            16.0
+        } else {
+            8.0 + joint as f32 * 0.4
+        };
+        keypoints[offset + 1] = if variant == 0 {
+            8.0 + joint as f32 * 0.4
+        } else {
+            16.0
+        };
+        keypoints[offset + 2] = 1.0;
+    }
+
+    let pose: OwnedValue = json!({
+        "version": 1.0,
+        "people": [{
+            "pose_keypoints_2d": keypoints
+        }]
+    });
+    fs::write(path, json::to_string(&pose).expect("pose json")).expect("pose write");
+}
+
 fn write_fixture_dataset(root: &Path) -> PathBuf {
     let data_root = root.join("data");
     let image_dir = data_root.join("persona_fixture").join("images");
     let glyph_dir = data_root.join("persona_fixture").join("glyphs");
+    let pose_dir = data_root.join("persona_fixture").join("poses");
     fs::create_dir_all(&image_dir).expect("image dir");
     fs::create_dir_all(&glyph_dir).expect("glyph dir");
+    fs::create_dir_all(&pose_dir).expect("pose dir");
 
     for (name, variant) in [("U+4E00.png", 0), ("U+4E8C.png", 1)] {
         write_fixture_image(&image_dir.join(name), variant);
         write_fixture_image(&glyph_dir.join(name), variant);
+        write_fixture_pose(&pose_dir.join(name.replace(".png", ".json")), variant);
     }
 
     data_root
@@ -109,8 +140,33 @@ fn retrieval_training_index_and_search_workflow_runs() {
     let index = read_candidate_index(&index_path).expect("read index");
     let query = pose_obc_retrieval::encode_pose_features(&model, &pose_features, &device)
         .expect("query embedding");
-    let hits = search_index(&index, &query, 1);
+    let hits = search_index(&index, &query, 1).expect("search index");
     assert_eq!(hits.len(), 1);
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn search_rejects_embedding_dimension_mismatch() {
+    let index = CandidateIndex {
+        version: pose_obc_retrieval::CANDIDATE_INDEX_VERSION,
+        model: RetrievalModelConfig {
+            input_dim: pose_obc_retrieval::RETRIEVAL_FEATURE_DIM,
+            hidden_dim: 8,
+            embedding_dim: 4,
+        },
+        entries: vec![CandidateEntry {
+            id: "U+4E00".to_string(),
+            codepoint: Some("U+4E00".to_string()),
+            character: Some("一".to_string()),
+            persona: "persona_fixture".to_string(),
+            glyph_path: PathBuf::from("glyph.png"),
+            embedding: vec![0.1, 0.2, 0.3, 0.4],
+        }],
+    };
+
+    let error = search_index(&index, &[0.1, 0.2], 1).expect_err("dimension mismatch");
+
+    assert!(error.to_string().contains("query embedding"));
+    assert!(error.to_string().contains("expected 4, got 2"));
 }

@@ -151,7 +151,7 @@ fn litehrnet18_backbone_and_pose_head_match_coco_shapes() {
     let pose = LiteHrNetPoseConfig::litehrnet18_coco().init::<B>(&device);
     let input = Tensor::random([1, 3, 64, 48], Distribution::Default, &device);
     let heatmaps = pose.forward(input);
-    assert_eq!(heatmaps.dims(), [1, 17, 16, 12]);
+    assert_eq!(heatmaps.dims(), [1, 37, 16, 12]);
 }
 
 #[test]
@@ -159,12 +159,12 @@ fn synthetic_training_closure_runs_forward_backward_and_adam() {
     let device = Default::default();
     let config = LiteHrNetPoseConfig {
         backbone: tiny_backbone_config(),
-        num_joints: 17,
+        num_joints: 37,
     };
 
     let model = config.init::<AB>(&device);
     let mut optimizer = ann::optim::AdamConfig::new().init::<AB, _>();
-    let batch = synthetic_pose_batch::<AB>(1, 64, 48, 17, &device);
+    let batch = synthetic_pose_batch::<AB>(1, 64, 48, 37, &device);
     let _model = train_step(model, &mut optimizer, batch, 2e-3);
 }
 
@@ -173,7 +173,7 @@ fn synthetic_training_loop_returns_updated_model() {
     let device = Default::default();
     let config = LiteHrNetPoseConfig {
         backbone: tiny_backbone_config(),
-        num_joints: 17,
+        num_joints: 37,
     };
 
     let _model = run_synthetic_training::<AB>(config, &device, 1, 1, 64, 48, 2e-3);

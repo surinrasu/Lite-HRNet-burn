@@ -39,9 +39,11 @@ fn fixture_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("lite_hrnet_burn_{name}_{}", std::process::id()))
 }
 
-fn write_fixture_dataset(root: &Path) -> (PathBuf, PathBuf) {
+fn write_fixture_dataset(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let image_dir = root.join("images");
+    let pose_dir = root.join("poses");
     fs::create_dir_all(&image_dir).expect("image dir");
+    fs::create_dir_all(&pose_dir).expect("pose dir");
 
     let mut image = RgbImage::new(64, 64);
     for y in 0..64 {
@@ -52,6 +54,22 @@ fn write_fixture_dataset(root: &Path) -> (PathBuf, PathBuf) {
     image
         .save(image_dir.join("person.png"))
         .expect("image save");
+
+    let mut pose_keypoints = vec![0.0; 37 * 3];
+    pose_keypoints[0] = 32.0;
+    pose_keypoints[1] = 32.0;
+    pose_keypoints[2] = 1.0;
+    let pose: OwnedValue = json!({
+        "version": 1.0,
+        "people": [{
+            "pose_keypoints_2d": pose_keypoints
+        }]
+    });
+    fs::write(
+        pose_dir.join("person.json"),
+        json::to_string(&pose).expect("pose json"),
+    )
+    .expect("pose write");
 
     let mut keypoints = vec![0.0; 17 * 3];
     keypoints[0] = 32.0;
@@ -79,7 +97,7 @@ fn write_fixture_dataset(root: &Path) -> (PathBuf, PathBuf) {
     )
     .expect("annotation write");
 
-    (annotation_path, image_dir)
+    (annotation_path, image_dir, pose_dir)
 }
 
 #[test]
@@ -87,18 +105,23 @@ fn coco_pose_dataset_builds_model_ready_batches() {
     let root = fixture_dir("dataset");
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("root");
-    let (annotation_path, image_dir) = write_fixture_dataset(&root);
+    let (annotation_path, image_dir, pose_dir) = write_fixture_dataset(&root);
 
-    let data_config = PoseDataConfig::from_input(64, 48, 17);
-    let dataset =
-        CocoPoseDataset::from_coco(annotation_path, image_dir, data_config).expect("dataset");
+    let data_config = PoseDataConfig::from_input(64, 48, 37);
+    let dataset = CocoPoseDataset::from_coco_with_spinepose(
+        annotation_path,
+        image_dir,
+        pose_dir,
+        data_config,
+    )
+    .expect("dataset");
     assert_eq!(dataset.len(), 1);
 
     let device = Default::default();
     let batch = dataset.batch::<AB>(&[0], &device).expect("batch");
     assert_eq!(batch.images.dims(), [1, 3, 64, 48]);
-    assert_eq!(batch.targets.dims(), [1, 17, 16, 12]);
-    assert_eq!(batch.target_weight.dims(), [1, 17, 1]);
+    assert_eq!(batch.targets.dims(), [1, 37, 16, 12]);
+    assert_eq!(batch.target_weight.dims(), [1, 37, 1]);
 
     let weights = batch
         .target_weight
@@ -116,16 +139,21 @@ fn dataset_training_loop_writes_report_and_checkpoints() {
     let root = fixture_dir("training");
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("root");
-    let (annotation_path, image_dir) = write_fixture_dataset(&root);
+    let (annotation_path, image_dir, pose_dir) = write_fixture_dataset(&root);
 
-    let data_config = PoseDataConfig::from_input(64, 48, 17);
-    let dataset =
-        CocoPoseDataset::from_coco(&annotation_path, &image_dir, data_config).expect("dataset");
+    let data_config = PoseDataConfig::from_input(64, 48, 37);
+    let dataset = CocoPoseDataset::from_coco_with_spinepose(
+        &annotation_path,
+        &image_dir,
+        &pose_dir,
+        data_config,
+    )
+    .expect("dataset");
     let checkpoint_dir = root.join("checkpoints");
     let config = PoseTrainingConfig {
         model: LiteHrNetPoseConfig {
             backbone: tiny_backbone_config(),
-            num_joints: 17,
+            num_joints: 37,
         },
         epochs: 1,
         batch_size: 1,

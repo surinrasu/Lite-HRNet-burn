@@ -10,8 +10,8 @@ use ann::{
 };
 use cli::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use pose_obc_retrieval::{
-    CandidateIndex, CocoPoseDataset, HeadUpsampleMode, LiteHrNetPoseConfig, PoseDataConfig,
-    PoseTrainingConfig, PoseTrainingProgress, PoseTrainingReport, RetrievalError,
+    CandidateIndex, CocoPoseDataset, DefaultPoseEstimator, HeadUpsampleMode, LiteHrNetPoseConfig,
+    PoseDataConfig, PoseTrainingConfig, PoseTrainingProgress, PoseTrainingReport, RetrievalError,
     RetrievalModelConfig, RetrievalPairDataset, RetrievalTrainingConfig, RetrievalTrainingProgress,
     build_candidate_index, encode_pose_features, extract_pose_features_from_path,
     load_retrieval_model, load_retrieval_model_config, read_candidate_index, search_index,
@@ -20,6 +20,8 @@ use pose_obc_retrieval::{
     train::{run_synthetic_training, train_dataset_with_progress},
     train_retrieval_dataset, write_candidate_index,
 };
+
+extern crate cli as clap;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
@@ -74,12 +76,18 @@ struct TrainArgs {
     /// Directory containing the training images referenced by the annotations.
     #[arg(long = "images", value_name = "DIR")]
     train_images: PathBuf,
+    /// Directory containing SpinePose JSON files for the training images.
+    #[arg(long = "pose-dir", value_name = "DIR")]
+    train_pose_dir: Option<PathBuf>,
     /// Validation COCO person-keypoints annotation JSON.
     #[arg(long = "validation-annotations", value_name = "PATH")]
     val_ann: Option<PathBuf>,
     /// Validation image directory. Defaults to --images when validation annotations are provided.
     #[arg(long = "validation-images", value_name = "DIR", requires = "val_ann")]
     val_images: Option<PathBuf>,
+    /// Directory containing SpinePose JSON files for the validation images.
+    #[arg(long = "validation-pose-dir", value_name = "DIR", requires = "val_ann")]
+    val_pose_dir: Option<PathBuf>,
     /// Directory for checkpoints and the training report.
     #[arg(
         short = 'o',
@@ -298,6 +306,9 @@ struct RetrievalServeArgs {
     /// Default number of hits in the UI.
     #[arg(short = 'k', long = "top-k", default_value_t = 8, value_parser = parse_positive_count)]
     top_k: usize,
+    /// Enable live browser video frame retrieval/scoring.
+    #[arg(long, action = ArgAction::SetTrue)]
+    live: bool,
     /// Keep duplicate glyph candidates from different persona directories when building in memory.
     #[arg(long = "include-duplicate-glyphs", action = ArgAction::SetFalse, default_value_t = true)]
     unique_glyphs: bool,
@@ -444,24 +455,45 @@ fn train_with_backend<B: AutodiffBackend>(
 ) -> Result<(), Box<dyn Error>> {
     let checkpoint_dir = args.out_dir.clone();
     let total_epochs = args.epochs;
-    let data = PoseDataConfig {
-        sigma: args.sigma,
-        ..PoseDataConfig::from_input(args.input_size.height, args.input_size.width, 17)
-    };
-
-    let train_data = CocoPoseDataset::from_coco(&args.train_ann, &args.train_images, data.clone())?;
-    let val_dataset = match &args.val_ann {
-        Some(val_ann) => Some(CocoPoseDataset::from_coco(
-            val_ann,
-            args.val_images.as_ref().unwrap_or(&args.train_images),
-            data,
-        )?),
-        None => None,
-    };
-
     let mut model = args.model.config();
     model.backbone.head_upsample_mode =
         resolve_head_upsample(args.backend, args.head_upsample_mode);
+
+    let data = PoseDataConfig {
+        sigma: args.sigma,
+        ..PoseDataConfig::from_input(
+            args.input_size.height,
+            args.input_size.width,
+            model.num_joints,
+        )
+    };
+
+    let train_pose_dir = args
+        .train_pose_dir
+        .clone()
+        .or_else(|| infer_spinepose_pose_dir(&args.train_images));
+    let train_data = load_pose_dataset(
+        &args.train_ann,
+        &args.train_images,
+        train_pose_dir.as_deref(),
+        data.clone(),
+    )?;
+    let val_dataset = match &args.val_ann {
+        Some(val_ann) => {
+            let val_images = args.val_images.as_ref().unwrap_or(&args.train_images);
+            let val_pose_dir = args
+                .val_pose_dir
+                .clone()
+                .or_else(|| infer_spinepose_pose_dir(val_images));
+            Some(load_pose_dataset(
+                val_ann,
+                val_images,
+                val_pose_dir.as_deref(),
+                data,
+            )?)
+        }
+        None => None,
+    };
 
     let train_samples = limited_len(train_data.len(), args.max_train_samples);
     let val_samples = val_dataset
@@ -472,6 +504,8 @@ fn train_with_backend<B: AutodiffBackend>(
         &args,
         train_samples,
         val_samples,
+        model.num_joints,
+        train_pose_dir.as_deref(),
         model.backbone.head_upsample_mode,
         prefetch_batches,
     );
@@ -784,7 +818,7 @@ fn run_retrieval_search_with_backend<B: Backend>(
         }
     };
     let embedding = encode_pose_features(&model, &features, device)?;
-    let hits = search_index(&index, &embedding, args.top_k);
+    let hits = search_index(&index, &embedding, args.top_k)?;
 
     println!("Query: {label}");
     println!("Backend: {}", args.backend);
@@ -871,14 +905,17 @@ fn run_retrieval_serve_with_backend<B: Backend>(
     println!("  pairs: {}", dataset.len());
     println!("  candidates: {}", index.entries.len());
     println!("  model: {}", args.model.display());
+    println!("  live: {}", if args.live { "enabled" } else { "disabled" });
     serve_retrieval(
         &args.addr,
         RetrievalService {
             model,
+            pose_estimator: DefaultPoseEstimator::default(),
             index,
             dataset,
             device,
             default_top_k: args.top_k,
+            live: args.live,
         },
     )?;
     Ok(())
@@ -971,6 +1008,30 @@ fn resolve_prefetch_batches(backend: BackendArg, requested: Option<usize>) -> us
     })
 }
 
+fn load_pose_dataset(
+    annotations: &Path,
+    images: &Path,
+    pose_dir: Option<&Path>,
+    data: PoseDataConfig,
+) -> Result<CocoPoseDataset, Box<dyn Error>> {
+    match pose_dir {
+        Some(pose_dir) => Ok(CocoPoseDataset::from_coco_with_spinepose(
+            annotations,
+            images,
+            pose_dir,
+            data,
+        )?),
+        None => Ok(CocoPoseDataset::from_coco(annotations, images, data)?),
+    }
+}
+
+fn infer_spinepose_pose_dir(image_root: &Path) -> Option<PathBuf> {
+    let parent = image_root.parent()?;
+    let split = image_root.file_name()?;
+    let candidate = parent.join("poses").join(split);
+    candidate.is_dir().then_some(candidate)
+}
+
 fn limited_len(len: usize, limit: Option<usize>) -> usize {
     limit.map_or(len, |limit| len.min(limit))
 }
@@ -979,12 +1040,15 @@ fn print_train_start(
     args: &TrainArgs,
     train_samples: usize,
     val_samples: Option<usize>,
+    num_joints: usize,
+    train_pose_dir: Option<&Path>,
     head_upsample_mode: HeadUpsampleMode,
     prefetch_batches: usize,
 ) {
-    println!("Training COCO keypoints");
+    println!("Training COCO SpinePose keypoints");
     println!("  backend: {}", args.backend);
     println!("  model: {}", args.model);
+    println!("  keypoints: {num_joints}");
     println!(
         "  input: {}x{}  batch: {}  epochs: {}  lr: {}",
         args.input_size.height,
@@ -1002,6 +1066,10 @@ fn print_train_start(
         train_samples,
         args.train_ann.display()
     );
+    match train_pose_dir {
+        Some(pose_dir) => println!("  train poses: {}", pose_dir.display()),
+        None => println!("  train poses: COCO annotation keypoints"),
+    }
     match (&args.val_ann, val_samples) {
         (Some(val_ann), Some(samples)) => {
             println!("  val: {} samples ({})", samples, val_ann.display());
@@ -1112,6 +1180,8 @@ mod tests {
             "person_keypoints_train.json",
             "--images",
             "train2017",
+            "--pose-dir",
+            "poses/train2017",
             "--input-size",
             "128x96",
             "--model",
@@ -1123,6 +1193,7 @@ mod tests {
         };
         assert_eq!(args.train_ann, PathBuf::from("person_keypoints_train.json"));
         assert_eq!(args.train_images, PathBuf::from("train2017"));
+        assert_eq!(args.train_pose_dir, Some(PathBuf::from("poses/train2017")));
         assert_eq!(args.input_size.height, 128);
         assert_eq!(args.input_size.width, 96);
         assert_eq!(args.model, ModelArg::LiteHrNet30);
@@ -1172,6 +1243,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_retrieval_serve_live_argument() {
+        let cli = Cli::parse_from([
+            "pose-obc-retrieval",
+            "retrieval",
+            "serve",
+            "--live",
+            "--top-k",
+            "5",
+        ]);
+
+        let Command::Retrieval(args) = cli.command else {
+            panic!("expected retrieval command");
+        };
+        let RetrievalCommand::Serve(args) = args.command else {
+            panic!("expected retrieval serve command");
+        };
+        assert!(args.live);
+        assert_eq!(args.top_k, 5);
+    }
+
+    #[test]
     fn rejects_invalid_input_size() {
         let error = Cli::try_parse_from(["pose-obc-retrieval", "smoke", "--input-size", "64"])
             .expect_err("invalid input size should fail");
@@ -1196,5 +1288,3 @@ mod tests {
         assert!(error.to_string().contains("--validation-annotations"));
     }
 }
-
-extern crate cli as clap;

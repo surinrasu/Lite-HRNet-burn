@@ -1,12 +1,39 @@
 #:schema https://mise.jdx.dev/schema/mise.json
+min_version = "2024.1.1"
 
 [tools]
-"pipx:hf" = "latest"
-"pipx:kaggle" = "latest"
 rust = { version = "latest", components = "cargo,rust-analyzer" }
+
+[tasks.build]
+description = "Build the CLI"
+alias = "b"
+sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+outputs = ["target/debug/pose-obc-retrieval"]
+run = "cargo build"
+
+[tasks.check]
+description = "Run cargo check"
+sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+run = "cargo check"
+
+[tasks.test]
+description = "Run Rust tests"
+alias = "t"
+run = "cargo test"
+
+[tasks.ci]
+description = "Run local CI checks"
+depends = ["check", "test"]
 
 [tasks."assets:retrieval"]
 description = "Update local front-end assets for retrieval"
+sources = ["mise.toml"]
+outputs = [
+  "{{ env.ASSET_DIR | default(value='assets') }}/beer.min.css",
+  "{{ env.ASSET_DIR | default(value='assets') }}/beer.min.js",
+  "{{ env.ASSET_DIR | default(value='assets') }}/material-symbols.css",
+  "{{ env.ASSET_DIR | default(value='assets') }}/material-symbols-outlined.ttf",
+]
 run = '''
 set -eu
 
@@ -44,6 +71,11 @@ CSS
 
 [tasks."data:coco2017"]
 description = "Download COCO 2017 dataset"
+tools = { "pipx:kaggle" = "latest" }
+sources = ["mise.toml"]
+outputs = [
+  "{{ env.DATA_DIR | default(value='data/coco') }}/.mise-coco2017-ready",
+]
 run = '''
 set -eu
 
@@ -112,13 +144,264 @@ do
   fi
 done
 
+touch "${DATA_DIR}/.mise-coco2017-ready"
+
 echo "COCO 2017 is ready under ${DATA_DIR}"
 echo "Train with:"
 echo "  mise run train:coco2017"
 '''
 
+[tasks."data:coco2017:generate-pose37"]
+description = "Generate SpinePose v2 large 37-keypoint JSON files for COCO 2017"
+depends = ["check:data:coco2017"]
+tools = { "pipx:spinepose" = "latest" }
+run = '''
+set -eu
+
+DATA_DIR="${DATA_DIR:-data/coco}"
+OUT_DIR="${OUT_DIR:-data/coco-37}"
+SPINEPOSE_HOME="${SPINEPOSE_HOME:-${PWD}/.spinepose-home}"
+MODE="${MODE:-large}"
+MODEL_VERSION="${MODEL_VERSION:-v2}"
+DETECTOR="${DETECTOR:-rfdetr}"
+DEVICE="${DEVICE:-cpu}"
+SPLIT="${SPLIT:-all}"
+OVERWRITE="${OVERWRITE:-0}"
+LIMIT="${LIMIT:-}"
+
+mkdir -p "${OUT_DIR}/annotations" "${OUT_DIR}/poses"
+
+link_or_keep() {
+  src="$1"
+  dst="$2"
+
+  if [ -e "${dst}" ] || [ -L "${dst}" ]; then
+    echo "Keeping existing ${dst}"
+    return
+  fi
+
+  case "${src}" in
+    /*) abs_src="${src}" ;;
+    *) abs_src="${PWD}/${src}" ;;
+  esac
+
+  ln -s "${abs_src}" "${dst}"
+}
+
+link_or_keep "${DATA_DIR}/train2017" "${OUT_DIR}/train2017"
+link_or_keep "${DATA_DIR}/val2017" "${OUT_DIR}/val2017"
+cp "${DATA_DIR}/annotations/person_keypoints_train2017.json" "${OUT_DIR}/annotations/person_keypoints_train2017.json"
+cp "${DATA_DIR}/annotations/person_keypoints_val2017.json" "${OUT_DIR}/annotations/person_keypoints_val2017.json"
+
+SPINEPOSE_BIN="$(command -v spinepose || true)"
+if [ -z "${SPINEPOSE_BIN}" ]; then
+  echo "Missing spinepose executable."
+  echo "Run this task through mise so pipx:spinepose is active: mise run data:coco2017:generate-pose37"
+  exit 1
+fi
+SPINEPOSE_LINK="$(readlink "${SPINEPOSE_BIN}" || true)"
+if [ -z "${SPINEPOSE_LINK}" ]; then
+  SPINEPOSE_LINK="${SPINEPOSE_BIN}"
+fi
+PYTHON_BIN="$(dirname "${SPINEPOSE_LINK}")/python"
+
+if [ ! -x "${PYTHON_BIN}" ]; then
+  echo "Missing pipx spinepose Python interpreter: ${PYTHON_BIN}"
+  echo "Run this task through mise so pipx:spinepose is active: mise run data:coco2017:generate-pose37"
+  exit 1
+fi
+
+env HOME="${SPINEPOSE_HOME}" "${PYTHON_BIN}" - \
+  "${DATA_DIR}" \
+  "${OUT_DIR}" \
+  "${MODE}" \
+  "${MODEL_VERSION}" \
+  "${DETECTOR}" \
+  "${DEVICE}" \
+  "${SPLIT}" \
+  "${OVERWRITE}" \
+  "${LIMIT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+import cv2
+import numpy as np
+from tqdm import tqdm
+
+from spinepose import SpinePoseEstimator
+
+
+EXPECTED_KEYPOINTS = 37
+
+
+def enabled(value):
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def output_path_for(out_root, split, image_file_name):
+    return out_root / "poses" / split / f"{Path(image_file_name).stem}.json"
+
+
+def split_specs(requested):
+    requested = requested.lower()
+    specs = {
+        "train": [("train2017", "person_keypoints_train2017.json")],
+        "train2017": [("train2017", "person_keypoints_train2017.json")],
+        "val": [("val2017", "person_keypoints_val2017.json")],
+        "val2017": [("val2017", "person_keypoints_val2017.json")],
+        "all": [
+            ("train2017", "person_keypoints_train2017.json"),
+            ("val2017", "person_keypoints_val2017.json"),
+        ],
+    }
+    if requested not in specs:
+        raise SystemExit(f"SPLIT must be one of: {', '.join(sorted(specs))}")
+    return specs[requested]
+
+
+def load_coco_images(data_root, split, annotation_file):
+    annotation_path = data_root / "annotations" / annotation_file
+    with annotation_path.open() as f:
+        coco = json.load(f)
+
+    images_by_id = {image["id"]: image for image in coco.get("images", [])}
+    annotated_image_ids = set()
+    for annotation in coco.get("annotations", []):
+        if annotation.get("iscrowd", 0):
+            continue
+        if annotation.get("category_id", 1) != 1:
+            continue
+        keypoints = annotation.get("keypoints") or []
+        has_keypoints = annotation.get("num_keypoints", 0) > 0 or any(
+            point[2] > 0 for point in zip(*[iter(keypoints)] * 3)
+        )
+        if has_keypoints:
+            annotated_image_ids.add(annotation["image_id"])
+
+    if not annotated_image_ids:
+        annotated_image_ids = set(images_by_id)
+
+    images = []
+    for image_id in sorted(annotated_image_ids):
+        image = images_by_id.get(image_id)
+        if not image:
+            continue
+        image_path = data_root / split / image["file_name"]
+        if image_path.is_file():
+            images.append((split, image["file_name"], image_path))
+    return images
+
+
+def write_openpose_json(results, output_path):
+    people = []
+    if results.size > 0:
+        for person in results:
+            people.append({"pose_keypoints_2d": person.reshape(-1).tolist()})
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as f:
+        json.dump({"version": 1.0, "people": people}, f)
+
+
+def estimate_image(estimator, image_path):
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"Cannot read image: {image_path}")
+
+    keypoints, scores = estimator(image)
+    if len(keypoints) == 0:
+        return np.array([])
+
+    keypoints = np.asarray(keypoints)
+    scores = np.asarray(scores)
+    if keypoints.shape[1] != EXPECTED_KEYPOINTS:
+        raise ValueError(
+            f"expected {EXPECTED_KEYPOINTS} SpinePose keypoints, got {keypoints.shape[1]}"
+        )
+
+    return np.concatenate([keypoints, scores[..., np.newaxis]], axis=-1)
+
+
+def write_ready_marker(out_root, mode, model_version, detector):
+    (out_root / ".mise-coco37-ready").write_text(
+        f"mode={mode}\nmodel_version={model_version}\ndetector={detector}\n"
+    )
+
+
+data_root = Path(sys.argv[1])
+out_root = Path(sys.argv[2])
+mode = sys.argv[3]
+model_version = sys.argv[4]
+detector = sys.argv[5]
+device = sys.argv[6]
+requested_split = sys.argv[7]
+overwrite = enabled(sys.argv[8])
+limit = int(sys.argv[9]) if sys.argv[9] else None
+
+images = []
+for split, annotation_file in split_specs(requested_split):
+    images.extend(load_coco_images(data_root, split, annotation_file))
+
+pending = [
+    item
+    for item in images
+    if overwrite or not output_path_for(out_root, item[0], item[1]).is_file()
+]
+if limit is not None:
+    pending = pending[:limit]
+
+print(f"images={len(images)} pending={len(pending)} out={out_root}")
+if not pending:
+    if limit is None:
+        write_ready_marker(out_root, mode, model_version, detector)
+    raise SystemExit(0)
+
+estimator = SpinePoseEstimator(
+    mode=mode,
+    backend="onnxruntime",
+    device=device,
+    detector=detector,
+    model_version=model_version,
+)
+
+failures = []
+for split, image_file_name, image_path in tqdm(pending, desc="coco-spinepose"):
+    try:
+        write_openpose_json(
+            estimate_image(estimator, image_path),
+            output_path_for(out_root, split, image_file_name),
+        )
+    except Exception as exc:
+        failures.append(
+            {
+                "split": split,
+                "image": image_file_name,
+                "path": str(image_path),
+                "error": str(exc),
+            }
+        )
+
+if failures:
+    failure_path = out_root / "spinepose_failures.json"
+    with failure_path.open("w") as f:
+        json.dump(failures, f, indent=2)
+    raise SystemExit(f"{len(failures)} failures written to {failure_path}")
+
+if limit is None:
+    write_ready_marker(out_root, mode, model_version, detector)
+PY
+
+echo "COCO-37 pose JSON is ready under ${OUT_DIR}"
+'''
+
 [tasks."data:pose-obc"]
 description = "Download surinrasu/pose-obc retrieval dataset from Hugging Face"
+tools = { "pipx:hf" = "latest" }
+sources = ["mise.toml"]
+outputs = [
+  "{{ env.DATA_DIR | default(value='data/pose-obc') }}/.mise-pose-obc-ready",
+]
 run = '''
 set -eu
 
@@ -144,18 +427,386 @@ if [ "${found_data}" -eq 0 ]; then
   exit 1
 fi
 
+touch "${DATA_DIR}/.mise-pose-obc-ready"
+
 echo "pose-obc retrieval data is ready under ${DATA_DIR}"
 echo "Train with:"
 echo "  mise run train:retrieval"
 '''
 
-[tasks."train:coco2017"]
-description = "Train on COCO 2017"
+[tasks."data:pose-obc:upload"]
+description = "Upload local pose-obc retrieval data to Hugging Face"
+depends = ["check:data:pose-obc"]
+tools = { "pipx:hf" = "latest", jq = "latest" }
+run = '''
+set -eu
+
+DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
+HF_DATASET="${HF_DATASET:-surinrasu/pose-obc}"
+HF_REVISION="${HF_REVISION:-main}"
+HF_COMMIT_MESSAGE="${HF_COMMIT_MESSAGE:-Update pose-obc dataset}"
+HF_FINE_RETRIES="${HF_FINE_RETRIES:-1}"
+HF_FILE_RETRIES="${HF_FILE_RETRIES:-3}"
+HF_RETRY_SECONDS="${HF_RETRY_SECONDS:-10}"
+HF_SKIP_EXISTING="${HF_SKIP_EXISTING:-1}"
+HF_UPLOAD_STRATEGY="${HF_UPLOAD_STRATEGY:-large-folder}"
+HF_RESPONSES_FILE_BY_FILE="${HF_RESPONSES_FILE_BY_FILE:-0}"
+HF_NUM_WORKERS="${HF_NUM_WORKERS:-4}"
+REMOTE_FILE_LIST="${REMOTE_FILE_LIST:-}"
+export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+
+echo "Uploading ${DATA_ROOT} to ${HF_DATASET}@${HF_REVISION}..."
+echo "Skipping local metadata: .DS_Store"
+
+if [ -f "${DATA_ROOT}/.gitattributes" ]; then
+  echo "Uploading dataset .gitattributes..."
+  hf upload "${HF_DATASET}" "${DATA_ROOT}/.gitattributes" .gitattributes \
+    --repo-type dataset \
+    --revision "${HF_REVISION}" \
+    --commit-message "${HF_COMMIT_MESSAGE}: .gitattributes"
+fi
+
+if [ "${HF_UPLOAD_STRATEGY}" = "large-folder" ]; then
+  hf upload-large-folder "${HF_DATASET}" "${DATA_ROOT}" \
+    --repo-type dataset \
+    --revision "${HF_REVISION}" \
+    --num-workers "${HF_NUM_WORKERS}" \
+    --exclude ".DS_Store" \
+    --exclude "**/.DS_Store" \
+    --exclude ".cache/**" \
+    --exclude "**/.cache/**" \
+    --exclude ".mise-*-ready"
+  exit 0
+fi
+
+if [ "${HF_SKIP_EXISTING}" != "0" ]; then
+  if [ -z "${REMOTE_FILE_LIST}" ]; then
+    REMOTE_FILE_LIST="$(mktemp)"
+    trap 'rm -f "${REMOTE_FILE_LIST}"' EXIT
+  fi
+
+  echo "Fetching remote file list for ${HF_DATASET}@${HF_REVISION}..."
+  hf datasets info "${HF_DATASET}" \
+    --revision "${HF_REVISION}" \
+    --expand siblings \
+    --format json \
+    | jq -r '.siblings[].rfilename' > "${REMOTE_FILE_LIST}"
+
+  remote_count="$(wc -l < "${REMOTE_FILE_LIST}" | tr -d ' ')"
+  echo "Remote currently has ${remote_count} files."
+fi
+
+remote_has() {
+  if [ "${HF_SKIP_EXISTING}" = "0" ]; then
+    return 1
+  fi
+
+  grep -Fqx "$1" "${REMOTE_FILE_LIST}"
+}
+
+prefix_complete() {
+  component_dir="$1"
+  prefix="$2"
+
+  for file_path in "${component_dir}/${prefix}"*; do
+    if [ ! -f "${file_path}" ]; then
+      continue
+    fi
+
+    repo_path="${file_path#"${DATA_ROOT}/"}"
+    if ! remote_has "${repo_path}"; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+upload_pattern() {
+  include_pattern="$1"
+  commit_label="$2"
+  max_attempts="$3"
+  attempt=1
+
+  while true; do
+    echo "Uploading ${commit_label}..."
+    if hf upload "${HF_DATASET}" "${DATA_ROOT}" . \
+      --repo-type dataset \
+      --revision "${HF_REVISION}" \
+      --commit-message "${HF_COMMIT_MESSAGE}: ${commit_label}" \
+      --include "${include_pattern}" \
+      --exclude ".DS_Store" \
+      --exclude "**/.DS_Store"
+    then
+      return 0
+    fi
+
+    if [ "${HF_SKIP_EXISTING}" != "0" ]; then
+      hf datasets info "${HF_DATASET}" \
+        --revision "${HF_REVISION}" \
+        --expand siblings \
+        --format json \
+        | jq -r '.siblings[].rfilename' > "${REMOTE_FILE_LIST}"
+    fi
+
+    if [ "${attempt}" -ge "${max_attempts}" ]; then
+      echo "Giving up on ${commit_label} after ${attempt} attempts."
+      return 1
+    fi
+
+    sleep_seconds=$((HF_RETRY_SECONDS * attempt))
+    echo "Upload failed for ${commit_label}; retrying in ${sleep_seconds}s..."
+    sleep "${sleep_seconds}"
+    attempt=$((attempt + 1))
+  done
+}
+
+upload_file() {
+  file_path="$1"
+  repo_path="${file_path#"${DATA_ROOT}/"}"
+  attempt=1
+
+  while true; do
+    echo "Uploading ${repo_path}..."
+    if remote_has "${repo_path}"; then
+      echo "Skipping ${repo_path}; already present on remote."
+      return 0
+    fi
+
+    if hf upload "${HF_DATASET}" "${file_path}" "${repo_path}" \
+      --repo-type dataset \
+      --revision "${HF_REVISION}" \
+      --commit-message "${HF_COMMIT_MESSAGE}: ${repo_path}"
+    then
+      return 0
+    fi
+
+    if [ "${attempt}" -ge "${HF_FILE_RETRIES}" ]; then
+      echo "Giving up on ${repo_path} after ${attempt} attempts."
+      return 1
+    fi
+
+    if [ "${HF_SKIP_EXISTING}" != "0" ]; then
+      hf datasets info "${HF_DATASET}" \
+        --revision "${HF_REVISION}" \
+        --expand siblings \
+        --format json \
+        | jq -r '.siblings[].rfilename' > "${REMOTE_FILE_LIST}"
+    fi
+
+    sleep_seconds=$((HF_RETRY_SECONDS * attempt))
+    echo "Upload failed for ${repo_path}; retrying in ${sleep_seconds}s..."
+    sleep "${sleep_seconds}"
+    attempt=$((attempt + 1))
+  done
+}
+
+upload_files_for_prefix() {
+  component_dir="$1"
+  prefix="$2"
+
+  echo "Retrying ${component_dir}/${prefix}* file by file..."
+  for file_path in "${component_dir}/${prefix}"*; do
+    if [ ! -f "${file_path}" ]; then
+      continue
+    fi
+
+    upload_file "${file_path}"
+  done
+}
+
+upload_component() {
+  persona_name="$1"
+  component_name="$2"
+  component_dir="${DATA_ROOT}/${persona_name}/${component_name}"
+
+  if [ ! -d "${component_dir}" ]; then
+    return 0
+  fi
+
+  echo "Uploading ${persona_name}/${component_name} by two-digit filename prefix..."
+  for first in 0 1 2 3 4 5 6 7 8 9; do
+    for second in 0 1 2 3 4 5 6 7 8 9; do
+      set -- "${component_dir}/${first}${second}"*
+      if [ ! -e "$1" ]; then
+        continue
+      fi
+
+      if prefix_complete "${component_dir}" "${first}${second}"; then
+        echo "Skipping ${persona_name}/${component_name}/${first}${second}*; already present on remote."
+        continue
+      fi
+
+      if [ "${component_name}" = "responses" ] && [ "${HF_RESPONSES_FILE_BY_FILE}" != "0" ]; then
+        upload_files_for_prefix "${component_dir}" "${first}${second}"
+        continue
+      fi
+
+      if upload_pattern \
+        "${persona_name}/${component_name}/${first}${second}*" \
+        "${persona_name}/${component_name}/${first}${second}*" \
+        "${HF_FINE_RETRIES}"
+      then
+        continue
+      fi
+
+      upload_files_for_prefix "${component_dir}" "${first}${second}"
+    done
+  done
+}
+
+for persona_dir in "${DATA_ROOT}"/persona_*; do
+  if [ ! -d "${persona_dir}" ]; then
+    continue
+  fi
+
+  persona_name="${persona_dir##*/}"
+  for component_name in glyphs images poses prompts responses; do
+    upload_component "${persona_name}" "${component_name}"
+  done
+done
+'''
+
+[tasks."data:pose-obc:generate-pose"]
+description = "Generate 37-keypoint pose JSON files for pose-obc"
+depends = ["check:data:pose-obc"]
+tools = { "pipx:spinepose" = "latest" }
+run = '''
+set -eu
+
+DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
+SPINEPOSE_HOME="${SPINEPOSE_HOME:-${PWD}/.spinepose-home}"
+MODE="${MODE:-large}"
+MODEL_VERSION="${MODEL_VERSION:-v2}"
+DETECTOR="${DETECTOR:-rfdetr}"
+DEVICE="${DEVICE:-cpu}"
+OVERWRITE="${OVERWRITE:-0}"
+LIMIT="${LIMIT:-}"
+
+SPINEPOSE_BIN="$(command -v spinepose || true)"
+if [ -z "${SPINEPOSE_BIN}" ]; then
+  echo "Missing spinepose executable."
+  echo "Run this task through mise so pipx:spinepose is active: mise run data:pose-obc:generate-pose"
+  exit 1
+fi
+SPINEPOSE_LINK="$(readlink "${SPINEPOSE_BIN}" || true)"
+if [ -z "${SPINEPOSE_LINK}" ]; then
+  SPINEPOSE_LINK="${SPINEPOSE_BIN}"
+fi
+PYTHON_BIN="$(dirname "${SPINEPOSE_LINK}")/python"
+
+if [ ! -x "${PYTHON_BIN}" ]; then
+  echo "Missing pipx spinepose Python interpreter: ${PYTHON_BIN}"
+  echo "Run this task through mise so pipx:spinepose is active: mise run data:pose-obc:generate-pose"
+  exit 1
+fi
+
+env HOME="${SPINEPOSE_HOME}" "${PYTHON_BIN}" - \
+  "${DATA_ROOT}" \
+  "${MODE}" \
+  "${MODEL_VERSION}" \
+  "${DETECTOR}" \
+  "${DEVICE}" \
+  "${OVERWRITE}" \
+  "${LIMIT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+import cv2
+import numpy as np
+from tqdm import tqdm
+
+from spinepose import SpinePoseEstimator
+
+
+def enabled(value):
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def output_path_for(image_path):
+    return image_path.parent.parent / "poses" / f"{image_path.stem}.json"
+
+
+def write_openpose_json(results, output_path):
+    people = []
+    if results.size > 0:
+        for person in results:
+            people.append({"pose_keypoints_2d": person.reshape(-1).tolist()})
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as f:
+        json.dump({"version": 1.0, "people": people}, f)
+
+
+def estimate_image(estimator, image_path):
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"Cannot read image: {image_path}")
+
+    keypoints, scores = estimator(image)
+    if len(keypoints) == 0:
+        return np.array([])
+    return np.concatenate([keypoints, scores[..., np.newaxis]], axis=-1)
+
+
+data_root = Path(sys.argv[1])
+mode = sys.argv[2]
+model_version = sys.argv[3]
+detector = sys.argv[4]
+device = sys.argv[5]
+overwrite = enabled(sys.argv[6])
+limit = int(sys.argv[7]) if sys.argv[7] else None
+
+images = sorted(data_root.glob("persona_*/images/*.png"))
+if not images:
+    raise SystemExit(f"No images found under {data_root}/persona_*/images")
+
+pending = [
+    path
+    for path in images
+    if overwrite or not output_path_for(path).is_file()
+]
+if limit is not None:
+    pending = pending[:limit]
+
+print(f"images={len(images)} pending={len(pending)}")
+if not pending:
+    raise SystemExit(0)
+
+estimator = SpinePoseEstimator(
+    mode=mode,
+    backend="onnxruntime",
+    device=device,
+    detector=detector,
+    model_version=model_version,
+)
+
+failures = []
+for image_path in tqdm(pending, desc="spinepose"):
+    try:
+        write_openpose_json(
+            estimate_image(estimator, image_path),
+            output_path_for(image_path),
+        )
+    except Exception as exc:
+        failures.append((str(image_path), str(exc)))
+
+if failures:
+    failure_path = data_root / "spinepose_failures.json"
+    with failure_path.open("w") as f:
+        json.dump(failures, f, indent=2)
+    raise SystemExit(f"{len(failures)} failures written to {failure_path}")
+PY
+'''
+
+[tasks."check:data:coco2017"]
+description = "Check COCO 2017 dataset files"
+hide = true
 run = '''
 set -eu
 
 DATA_DIR="${DATA_DIR:-data/coco}"
-OUTPUT_DIR="${OUTPUT_DIR:-runs/coco2017}"
 
 for required in \
   "${DATA_DIR}/train2017" \
@@ -169,23 +820,39 @@ do
     exit 1
   fi
 done
-
-cargo run --release -- train \
-  --annotations "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
-  --images "${DATA_DIR}/train2017" \
-  --validation-annotations "${DATA_DIR}/annotations/person_keypoints_val2017.json" \
-  --validation-images "${DATA_DIR}/val2017" \
-  --output-dir "${OUTPUT_DIR}" \
-  "$@"
 '''
 
-[tasks."train:retrieval"]
-description = "Train retrieval on surinrasu/pose-obc"
+[tasks."check:data:coco37"]
+description = "Check COCO 2017 plus SpinePose 37-keypoint JSON files"
+hide = true
+run = '''
+set -eu
+
+DATA_DIR="${DATA_DIR:-data/coco-37}"
+
+for required in \
+  "${DATA_DIR}/train2017" \
+  "${DATA_DIR}/val2017" \
+  "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
+  "${DATA_DIR}/annotations/person_keypoints_val2017.json" \
+  "${DATA_DIR}/poses/train2017" \
+  "${DATA_DIR}/poses/val2017"
+do
+  if [ ! -e "${required}" ]; then
+    echo "Missing required COCO-37 file or directory: ${required}"
+    echo "Run first: DATA_DIR=data/coco OUT_DIR=${DATA_DIR} mise run data:coco2017:generate-pose37"
+    exit 1
+  fi
+done
+'''
+
+[tasks."check:data:pose-obc"]
+description = "Check pose-obc retrieval data"
+hide = true
 run = '''
 set -eu
 
 DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
-OUTPUT_DIR="${OUTPUT_DIR:-runs/retrieval}"
 
 found_data=0
 for persona_dir in "${DATA_ROOT}"/persona_*; do
@@ -200,6 +867,66 @@ if [ "${found_data}" -eq 0 ]; then
   echo "Run first: mise run data:pose-obc"
   exit 1
 fi
+'''
+
+[tasks."check:model:retrieval"]
+description = "Check retrieval model file"
+hide = true
+run = '''
+set -eu
+
+MODEL="${MODEL:-runs/retrieval/last.mpk}"
+
+if [ ! -f "${MODEL}" ] && [ ! -f "${MODEL%.mpk}.mpk" ]; then
+  echo "Missing retrieval model: ${MODEL}"
+  echo "Run first: mise run train:retrieval"
+  exit 1
+fi
+'''
+
+[tasks."check:index:retrieval"]
+description = "Check retrieval index file"
+hide = true
+run = '''
+set -eu
+
+INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
+
+if [ ! -f "${INDEX}" ]; then
+  echo "Missing retrieval index: ${INDEX}"
+  echo "Run first: mise run index:retrieval"
+  exit 1
+fi
+'''
+
+[tasks."train:coco2017"]
+description = "Train Lite-HRNet on COCO 2017 with SpinePose 37-keypoint labels"
+depends = ["check:data:coco37"]
+run = '''
+set -eu
+
+DATA_DIR="${DATA_DIR:-data/coco-37}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/coco37}"
+
+cargo run --release -- train \
+  --annotations "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
+  --images "${DATA_DIR}/train2017" \
+  --pose-dir "${DATA_DIR}/poses/train2017" \
+  --validation-annotations "${DATA_DIR}/annotations/person_keypoints_val2017.json" \
+  --validation-images "${DATA_DIR}/val2017" \
+  --validation-pose-dir "${DATA_DIR}/poses/val2017" \
+  --output-dir "${OUTPUT_DIR}" \
+  "$@"
+'''
+
+[tasks."train:retrieval"]
+description = "Train retrieval on surinrasu/pose-obc"
+depends = ["check:data:pose-obc"]
+run = '''
+set -eu
+
+DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/retrieval}"
 
 cargo run --release -- retrieval train \
   --data-root "${DATA_ROOT}" \
@@ -209,25 +936,12 @@ cargo run --release -- retrieval train \
 
 [tasks."train:retrieval:metal"]
 description = "Train retrieval on surinrasu/pose-obc with Metal"
+depends = ["check:data:pose-obc"]
 run = '''
 set -eu
 
 DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/retrieval}"
-
-found_data=0
-for persona_dir in "${DATA_ROOT}"/persona_*; do
-  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
-    found_data=1
-    break
-  fi
-done
-
-if [ "${found_data}" -eq 0 ]; then
-  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
-  echo "Run first: mise run data:pose-obc"
-  exit 1
-fi
 
 cargo run --release --features metal -- retrieval train \
   --backend metal \
@@ -238,32 +952,18 @@ cargo run --release --features metal -- retrieval train \
 
 [tasks."index:retrieval"]
 description = "Build retrieval glyph index"
+depends = ["check:data:pose-obc", "check:model:retrieval"]
+sources = [
+  "{{ env.DATA_ROOT | default(value='data/pose-obc') }}/persona_*/glyphs/*.png",
+  "{{ env.MODEL | default(value='runs/retrieval/last.mpk') }}",
+]
+outputs = ["{{ env.INDEX | default(value='runs/retrieval/glyph_index.json') }}"]
 run = '''
 set -eu
 
 DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
 MODEL="${MODEL:-runs/retrieval/last.mpk}"
 INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
-
-found_data=0
-for persona_dir in "${DATA_ROOT}"/persona_*; do
-  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
-    found_data=1
-    break
-  fi
-done
-
-if [ "${found_data}" -eq 0 ]; then
-  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
-  echo "Run first: mise run data:pose-obc"
-  exit 1
-fi
-
-if [ ! -f "${MODEL}" ] && [ ! -f "${MODEL%.mpk}.mpk" ]; then
-  echo "Missing retrieval model: ${MODEL}"
-  echo "Run first: mise run train:retrieval"
-  exit 1
-fi
 
 index_dir="${INDEX%/*}"
 if [ "${index_dir}" != "${INDEX}" ] && [ -n "${index_dir}" ]; then
@@ -279,6 +979,8 @@ cargo run --release -- retrieval index \
 
 [tasks."search:retrieval"]
 description = "Search retrieval index with an image or sample"
+depends = ["check:data:pose-obc", "check:model:retrieval", "check:index:retrieval"]
+tools = { "pipx:spinepose" = "latest" }
 run = '''
 set -eu
 
@@ -286,32 +988,7 @@ DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
 MODEL="${MODEL:-runs/retrieval/last.mpk}"
 INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
 TOP_K="${TOP_K:-8}"
-
-found_data=0
-for persona_dir in "${DATA_ROOT}"/persona_*; do
-  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
-    found_data=1
-    break
-  fi
-done
-
-if [ "${found_data}" -eq 0 ]; then
-  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
-  echo "Run first: mise run data:pose-obc"
-  exit 1
-fi
-
-if [ ! -f "${MODEL}" ] && [ ! -f "${MODEL%.mpk}.mpk" ]; then
-  echo "Missing retrieval model: ${MODEL}"
-  echo "Run first: mise run train:retrieval"
-  exit 1
-fi
-
-if [ ! -f "${INDEX}" ]; then
-  echo "Missing retrieval index: ${INDEX}"
-  echo "Run first: mise run index:retrieval"
-  exit 1
-fi
+export SPINEPOSE_HOME="${SPINEPOSE_HOME:-${PWD}/.spinepose-home}"
 
 if [ -n "${IMAGE:-}" ]; then
   cargo run --release -- retrieval search \
@@ -343,6 +1020,8 @@ fi
 
 [tasks."serve:retrieval"]
 description = "Serve retrieval UI"
+depends = ["check:data:pose-obc", "check:model:retrieval"]
+tools = { "pipx:spinepose" = "latest" }
 run = '''
 set -eu
 
@@ -351,73 +1030,70 @@ MODEL="${MODEL:-runs/retrieval/last.mpk}"
 INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
 ADDR="${ADDR:-127.0.0.1:8080}"
 TOP_K="${TOP_K:-8}"
-
-found_data=0
-for persona_dir in "${DATA_ROOT}"/persona_*; do
-  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
-    found_data=1
-    break
-  fi
-done
-
-if [ "${found_data}" -eq 0 ]; then
-  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
-  echo "Run first: mise run data:pose-obc"
-  exit 1
+BACKEND="${BACKEND:-flex}"
+LIVE="${LIVE:-0}"
+export SPINEPOSE_HOME="${SPINEPOSE_HOME:-${PWD}/.spinepose-home}"
+LIVE_ARGS=""
+if [ "${LIVE}" = "1" ] || [ "${LIVE}" = "true" ]; then
+  LIVE_ARGS="--live"
 fi
-
-if [ ! -f "${MODEL}" ] && [ ! -f "${MODEL%.mpk}.mpk" ]; then
-  echo "Missing retrieval model: ${MODEL}"
-  echo "Run first: mise run train:retrieval"
-  exit 1
+CARGO_ARGS="--release"
+if [ "${BACKEND}" = "metal" ]; then
+  CARGO_ARGS="--release --features metal"
 fi
 
 if [ -f "${INDEX}" ]; then
-  cargo run --release -- retrieval serve \
+  cargo run ${CARGO_ARGS} -- retrieval serve \
+    --backend "${BACKEND}" \
     --data-root "${DATA_ROOT}" \
     --model "${MODEL}" \
     --index "${INDEX}" \
     --addr "${ADDR}" \
     --top-k "${TOP_K}" \
+    ${LIVE_ARGS} \
     "$@"
 else
   echo "Retrieval index not found at ${INDEX}; serving will build candidates in memory."
-  cargo run --release -- retrieval serve \
+  cargo run ${CARGO_ARGS} -- retrieval serve \
+    --backend "${BACKEND}" \
     --data-root "${DATA_ROOT}" \
     --model "${MODEL}" \
     --addr "${ADDR}" \
     --top-k "${TOP_K}" \
+    ${LIVE_ARGS} \
     "$@"
 fi
 '''
 
+[tasks."serve:retrieval:metal"]
+description = "Serve retrieval UI with Metal"
+run = [{ task = "serve:retrieval", env = { BACKEND = "metal" } }]
+
+[tasks."serve:retrieval:live"]
+description = "Serve retrieval UI with live video input"
+run = [{ task = "serve:retrieval", env = { LIVE = "1" } }]
+
+[tasks."serve:retrieval:live:metal"]
+description = "Serve retrieval UI with live video input and Metal"
+run = [{ task = "serve:retrieval", env = { BACKEND = "metal", LIVE = "1" } }]
+
 [tasks."train:coco2017:metal"]
-description = "Train on COCO 2017 with Metal"
+description = "Train Lite-HRNet on COCO 2017 SpinePose 37 labels with Metal"
+depends = ["check:data:coco37"]
 run = '''
 set -eu
 
-DATA_DIR="${DATA_DIR:-data/coco}"
-OUTPUT_DIR="${OUTPUT_DIR:-runs/coco2017}"
-
-for required in \
-  "${DATA_DIR}/train2017" \
-  "${DATA_DIR}/val2017" \
-  "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
-  "${DATA_DIR}/annotations/person_keypoints_val2017.json"
-do
-  if [ ! -e "${required}" ]; then
-    echo "Missing required COCO file or directory: ${required}"
-    echo "Run first: mise run data:coco2017"
-    exit 1
-  fi
-done
+DATA_DIR="${DATA_DIR:-data/coco-37}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/coco37}"
 
 cargo run --release --features metal -- train \
   --backend metal \
   --annotations "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
   --images "${DATA_DIR}/train2017" \
+  --pose-dir "${DATA_DIR}/poses/train2017" \
   --validation-annotations "${DATA_DIR}/annotations/person_keypoints_val2017.json" \
   --validation-images "${DATA_DIR}/val2017" \
+  --validation-pose-dir "${DATA_DIR}/poses/val2017" \
   --output-dir "${OUTPUT_DIR}" \
   "$@"
 '''
