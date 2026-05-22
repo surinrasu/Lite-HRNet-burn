@@ -300,8 +300,11 @@ pub(super) fn image_content_type(path: &Path) -> &'static str {
         .to_ascii_lowercase()
         .as_str()
     {
+        "avif" => "image/avif",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
         _ => "image/png",
     }
 }

@@ -30,6 +30,8 @@ const BEER_CSS: &[u8] = include_bytes!("../assets/beer.min.css");
 const BEER_JS: &[u8] = include_bytes!("../assets/beer.min.js");
 const MATERIAL_SYMBOLS_CSS: &[u8] = include_bytes!("../assets/material-symbols.css");
 const MATERIAL_SYMBOLS_FONT: &[u8] = include_bytes!("../assets/material-symbols-outlined.ttf");
+const EXAMPLE_ASSET_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/examples");
+const EXAMPLE_ASSET_PREFIX: &str = "/assets/examples/";
 
 pub struct RetrievalService<B: Backend> {
     pub model: RetrievalModel<B>,
@@ -88,6 +90,9 @@ fn route_request<B: Backend>(service: &RetrievalService<B>, request: HttpRequest
         ("GET", "/assets/material-symbols-outlined.ttf") => {
             static_response("font/ttf", MATERIAL_SYMBOLS_FONT)
         }
+        _ if request.method == "GET" && request.path.starts_with(EXAMPLE_ASSET_PREFIX) => {
+            example_asset_response(&request.path)
+        }
         ("GET", "/health") => HttpResponse::ok(
             "application/json; charset=utf-8",
             format!(
@@ -125,6 +130,64 @@ fn route_request<B: Backend>(service: &RetrievalService<B>, request: HttpRequest
         }
         _ => error_response(404, "not found"),
     }
+}
+
+fn example_image_names() -> Vec<String> {
+    let Ok(entries) = fs::read_dir(EXAMPLE_ASSET_DIR) else {
+        return Vec::new();
+    };
+    let mut names = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            is_example_gallery_image_name(&name).then_some(name)
+        })
+        .collect::<Vec<_>>();
+
+    names.sort_by(|left, right| {
+        example_image_index(left)
+            .cmp(&example_image_index(right))
+            .then_with(|| left.cmp(right))
+    });
+    names
+}
+
+fn is_example_gallery_image_name(name: &str) -> bool {
+    is_example_image_name(name)
+        && Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "avif" | "png" | "jpg" | "jpeg" | "webp"
+                )
+            })
+            .unwrap_or(false)
+}
+
+fn example_image_index(name: &str) -> usize {
+    Path::new(name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.parse::<usize>().ok())
+        .unwrap_or(usize::MAX)
+}
+
+fn is_example_image_name(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return false;
+    }
+    let Some(extension) = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "avif" | "png" | "jpg" | "jpeg" | "webp" | "heic" | "heif"
+    )
 }
 
 fn sample_search_from_query(
@@ -261,6 +324,16 @@ fn sample_image_response(service: &RetrievalService<impl Backend>, path: &str) -
         return error_response(404, "sample image not found");
     };
     file_response(&pair.image_path)
+}
+
+fn example_asset_response(path: &str) -> HttpResponse {
+    let Some(name) = path.strip_prefix(EXAMPLE_ASSET_PREFIX) else {
+        return error_response(400, "invalid example asset");
+    };
+    if !is_example_image_name(name) {
+        return error_response(400, "invalid example asset");
+    }
+    file_response(&Path::new(EXAMPLE_ASSET_DIR).join(name))
 }
 
 fn file_response(path: &Path) -> HttpResponse {

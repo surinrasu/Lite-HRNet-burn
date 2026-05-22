@@ -9,7 +9,7 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
     let sample_count = service.dataset.len();
     let candidate_count = service.index.entries.len();
     let top_k = service.default_top_k;
-    let sample_indices = (0..sample_count.min(24)).collect::<Vec<_>>();
+    let example_images = super::example_image_names();
 
     maud! {
         !DOCTYPE
@@ -130,12 +130,12 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
                         }
                     }
 
-                    h6 { "Samples" }
-                    div class="sample-grid" {
-                        @for index in sample_indices.iter().copied() {
-                            a class="sample-card" href=(format!("/search?sample={index}&k={top_k}")) {
-                                img src=(format!("/sample/{index}")) alt=(service.dataset.pairs()[index].id.as_str()) "loading"="lazy";
-                                span { "#" (index) " " (service.dataset.pairs()[index].id.as_str()) }
+                    @if !example_images.is_empty() {
+                        div class="example-gallery" aria-label="Example images" {
+                            @for name in example_images.iter() {
+                                a class="example-card" href=(format!("{}{}", super::EXAMPLE_ASSET_PREFIX, name)) aria-label=(format!("Example {name}")) {
+                                    img src=(format!("{}{}", super::EXAMPLE_ASSET_PREFIX, name)) alt=(format!("Example {name}")) "loading"="lazy";
+                                }
                             }
                         }
                     }
@@ -459,10 +459,11 @@ i { font-family: "Material Symbols Outlined"; font-weight: normal; font-style: n
 .live-result-body strong, .live-result-body span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-result-body span, .live-result-body small { color: var(--on-surface-variant); font-size: .78rem; }
 .live-result-body progress { width: 100%; height: .45rem; }
-.sample-grid, .result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .75rem; }
-.sample-card { color: inherit; text-decoration: none; border: 1px solid var(--outline-variant); border-radius: .5rem; overflow: hidden; background: var(--surface-container); display: grid; gap: .35rem; padding: .45rem; }
-.sample-card img, .result-card img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; background: white; border-radius: .35rem; }
-.sample-card span { font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.example-gallery { margin-top: 1.25rem; display: flex; gap: .75rem; overflow-x: auto; overflow-y: hidden; padding: .1rem 0 .6rem; scroll-snap-type: x proximity; }
+.example-card { flex: 0 0 11rem; color: inherit; text-decoration: none; border: 1px solid var(--outline-variant); border-radius: .5rem; overflow: hidden; background: var(--surface-container); padding: .35rem; scroll-snap-align: start; }
+.example-card img { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; border-radius: .35rem; display: block; }
+.result-card img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; background: white; border-radius: .35rem; display: block; }
+.result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .75rem; }
 .result-card { position: relative; border-radius: .5rem; }
 .result-card .rank { position: absolute; top: .55rem; left: .55rem; padding: .1rem .45rem; border-radius: 999px; background: var(--primary); color: var(--on-primary); font-size: .75rem; }
 .result-card h6, .result-card p { overflow-wrap: anywhere; }
@@ -482,6 +483,8 @@ i { font-family: "Material Symbols Outlined"; font-weight: normal; font-style: n
   .query-card h6 { font-size: 1.35rem; overflow-wrap: anywhere; }
   .live-stage { min-height: 11rem; }
   .live-results { grid-template-columns: 1fr; }
-  .sample-grid, .result-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+  .example-gallery { margin-top: .75rem; }
+  .example-card { flex-basis: 9rem; }
+  .result-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
 }
 "#;
