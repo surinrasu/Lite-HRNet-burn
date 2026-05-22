@@ -1,59 +1,18 @@
 use std::{
-    env, fs,
-    io::{Cursor, Write},
+    fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
 };
 
-use image::{DynamicImage, ImageFormat};
+use image::DynamicImage;
 use serde::Deserialize;
 
-use crate::RetrievalError;
+use crate::{RetrievalError, spinepose_burn};
 
 pub const SPINEPOSE_KEYPOINTS: usize = 37;
 pub const SPINEPOSE_VALUES_PER_KEYPOINT: usize = 3;
 pub const SPINEPOSE_FEATURE_DIM: usize = SPINEPOSE_KEYPOINTS * SPINEPOSE_VALUES_PER_KEYPOINT;
 
 const MIN_KEYPOINT_CONFIDENCE: f32 = 0.05;
-const RUNTIME_SCRIPT: &str = r#"
-import json
-import os
-import sys
-
-import cv2
-import numpy as np
-from spinepose import SpinePoseEstimator
-
-image_arg = sys.argv[1]
-if image_arg == "-":
-    encoded = np.frombuffer(sys.stdin.buffer.read(), dtype=np.uint8)
-    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-else:
-    image = cv2.imread(image_arg, cv2.IMREAD_COLOR)
-if image is None:
-    raise SystemExit(f"cannot read image: {image_arg}")
-
-estimator = SpinePoseEstimator(
-    mode=os.environ.get("SPINEPOSE_MODE", "large"),
-    backend=os.environ.get("SPINEPOSE_BACKEND", "onnxruntime"),
-    device=os.environ.get("SPINEPOSE_DEVICE", "cpu"),
-    detector=os.environ.get("SPINEPOSE_DETECTOR", "rfdetr"),
-    model_version=os.environ.get("SPINEPOSE_MODEL_VERSION", "v2"),
-)
-
-keypoints, scores = estimator(image)
-people = []
-if len(keypoints) > 0:
-    keypoints = np.asarray(keypoints)
-    scores = np.asarray(scores)
-    if keypoints.shape[1] != 37:
-        raise SystemExit(f"expected 37 SpinePose keypoints, got {keypoints.shape[1]}")
-    poses = np.concatenate([keypoints, scores[..., np.newaxis]], axis=-1)
-    for person in poses:
-        people.append({"pose_keypoints_2d": person.reshape(-1).tolist()})
-
-print(json.dumps({"version": 1.0, "people": people}))
-"#;
 
 pub trait PoseFeatureEstimator {
     fn estimate_pose_features(&self, image: &DynamicImage) -> Result<Vec<f32>, RetrievalError>;
@@ -73,7 +32,8 @@ impl SpinePoseEstimator {
             return read_spinepose_features(pose_path);
         }
 
-        let keypoints = run_spinepose(SpinePoseInput::Path(path))?;
+        let image = image::open(path)?;
+        let keypoints = run_spinepose(&image)?;
         spinepose_keypoints_to_features(&keypoints)
     }
 
@@ -81,16 +41,16 @@ impl SpinePoseEstimator {
         &self,
         bytes: &[u8],
     ) -> Result<Vec<f32>, RetrievalError> {
-        let keypoints = run_spinepose(SpinePoseInput::EncodedBytes(bytes))?;
+        let image = image::load_from_memory(bytes)?;
+        let keypoints = run_spinepose(&image)?;
         spinepose_keypoints_to_features(&keypoints)
     }
 }
 
 impl PoseFeatureEstimator for SpinePoseEstimator {
     fn estimate_pose_features(&self, image: &DynamicImage) -> Result<Vec<f32>, RetrievalError> {
-        let mut encoded = Cursor::new(Vec::new());
-        image.write_to(&mut encoded, ImageFormat::Png)?;
-        self.estimate_pose_features_from_bytes(&encoded.into_inner())
+        let keypoints = run_spinepose(image)?;
+        spinepose_keypoints_to_features(&keypoints)
     }
 
     fn estimate_pose_features_from_bytes(&self, bytes: &[u8]) -> Result<Vec<f32>, RetrievalError> {
@@ -246,117 +206,11 @@ fn landmark_normalization(keypoints: &[[f32; 3]]) -> (f32, f32, f32) {
     )
 }
 
-#[derive(Clone, Copy)]
-enum SpinePoseInput<'a> {
-    Path(&'a Path),
-    EncodedBytes(&'a [u8]),
-}
-
-fn run_spinepose(input: SpinePoseInput<'_>) -> Result<Vec<[f32; 3]>, RetrievalError> {
-    let python = resolve_spinepose_python()?;
-    let mut command = Command::new(&python);
-    command.arg("-c").arg(RUNTIME_SCRIPT);
-    let (source, stdin_bytes) = match input {
-        SpinePoseInput::Path(path) => {
-            command.arg(path).stdin(Stdio::null());
-            (path.display().to_string(), None)
-        }
-        SpinePoseInput::EncodedBytes(bytes) => {
-            command.arg("-").stdin(Stdio::piped());
-            ("encoded image bytes".to_string(), Some(bytes))
-        }
-    };
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let Ok(home) = env::var("SPINEPOSE_HOME") {
-        command.env("HOME", home);
-    }
-
-    let mut child = command.spawn().map_err(|error| {
-        RetrievalError::InvalidData(format!(
-            "failed to start SpinePose runtime with {}: {error}",
-            python.display()
-        ))
-    })?;
-    if let Some(bytes) = stdin_bytes {
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            RetrievalError::InvalidData("failed to open SpinePose stdin".to_string())
-        })?;
-        stdin.write_all(bytes)?;
-    }
-
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(RetrievalError::InvalidData(format!(
-            "SpinePose failed for {}: {}",
-            source,
-            stderr.trim()
-        )));
-    }
-
-    let mut stdout = output.stdout;
-    let root: OpenPoseRoot = json::from_slice(&mut stdout)?;
-    let people = root
-        .people
-        .into_iter()
-        .map(|person| {
-            person
-                .pose_keypoints_2d
-                .chunks_exact(SPINEPOSE_VALUES_PER_KEYPOINT)
-                .take(SPINEPOSE_KEYPOINTS)
-                .map(|keypoint| [keypoint[0], keypoint[1], keypoint[2].clamp(0.0, 1.0)])
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
+fn run_spinepose(image: &DynamicImage) -> Result<Vec<[f32; 3]>, RetrievalError> {
+    let people = spinepose_burn::estimate_people(image)?;
     best_spinepose_person(&people)
         .map(<[_]>::to_vec)
         .ok_or_else(|| RetrievalError::InvalidData("SpinePose did not detect a person".to_string()))
-}
-
-fn resolve_spinepose_python() -> Result<PathBuf, RetrievalError> {
-    if let Ok(path) = env::var("SPINEPOSE_PYTHON") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-
-    if let Some(spinepose) = find_in_path("spinepose") {
-        let target = fs::read_link(&spinepose).unwrap_or_else(|_| spinepose.clone());
-        let target = if target.is_absolute() {
-            target
-        } else {
-            spinepose
-                .parent()
-                .map(|parent| parent.join(&target))
-                .unwrap_or(target)
-        };
-        if let Some(parent) = target.parent() {
-            let python = parent.join("python");
-            if python.is_file() {
-                return Ok(python);
-            }
-        }
-    }
-
-    for name in ["python3", "python"] {
-        if let Some(path) = find_in_path(name) {
-            return Ok(path);
-        }
-    }
-
-    Err(RetrievalError::InvalidData(
-        "SpinePose runtime not found; run through `mise run ...` or set SPINEPOSE_PYTHON"
-            .to_string(),
-    ))
-}
-
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    env::var_os("PATH").and_then(|paths| {
-        env::split_paths(&paths)
-            .map(|path| path.join(name))
-            .find(|path| path.is_file())
-    })
 }
 
 fn format_path_stem(stem: &std::ffi::OsStr) -> PathBuf {

@@ -884,7 +884,7 @@ if [ ! -f "${MODEL}" ] && [ ! -f "${MODEL%.mpk}.mpk" ]; then
 fi
 '''
 
-[tasks."check:index:retrieval"]
+[tasks."check:retrieval:index"]
 description = "Check retrieval index file"
 hide = true
 run = '''
@@ -894,7 +894,7 @@ INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
 
 if [ ! -f "${INDEX}" ]; then
   echo "Missing retrieval index: ${INDEX}"
-  echo "Run first: mise run index:retrieval"
+  echo "Run first: mise run retrieval:index"
   exit 1
 fi
 '''
@@ -950,7 +950,7 @@ cargo run --release --features metal -- retrieval train \
   "$@"
 '''
 
-[tasks."index:retrieval"]
+[tasks."retrieval:index"]
 description = "Build retrieval glyph index"
 depends = ["check:data:pose-obc", "check:model:retrieval"]
 sources = [
@@ -977,10 +977,9 @@ cargo run --release -- retrieval index \
   "$@"
 '''
 
-[tasks."search:retrieval"]
+[tasks."retrieval:search"]
 description = "Search retrieval index with an image or sample"
-depends = ["check:data:pose-obc", "check:model:retrieval", "check:index:retrieval"]
-tools = { "pipx:spinepose" = "latest" }
+depends = ["check:data:pose-obc", "check:model:retrieval", "check:retrieval:index"]
 run = '''
 set -eu
 
@@ -988,7 +987,6 @@ DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
 MODEL="${MODEL:-runs/retrieval/last.mpk}"
 INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
 TOP_K="${TOP_K:-8}"
-export SPINEPOSE_HOME="${SPINEPOSE_HOME:-${PWD}/.spinepose-home}"
 
 if [ -n "${IMAGE:-}" ]; then
   cargo run --release -- retrieval search \
@@ -1021,7 +1019,6 @@ fi
 [tasks."serve:retrieval"]
 description = "Serve retrieval UI"
 depends = ["check:data:pose-obc", "check:model:retrieval"]
-tools = { "pipx:spinepose" = "latest" }
 run = '''
 set -eu
 
@@ -1032,7 +1029,6 @@ ADDR="${ADDR:-127.0.0.1:8080}"
 TOP_K="${TOP_K:-8}"
 BACKEND="${BACKEND:-flex}"
 LIVE="${LIVE:-0}"
-export SPINEPOSE_HOME="${SPINEPOSE_HOME:-${PWD}/.spinepose-home}"
 LIVE_ARGS=""
 if [ "${LIVE}" = "1" ] || [ "${LIVE}" = "true" ]; then
   LIVE_ARGS="--live"

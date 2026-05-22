@@ -18,10 +18,10 @@ mise run data:pose-obc
 
 # Train the retrieval model and build the glyph embedding index
 mise run train:retrieval
-mise run index:retrieval
+mise run retrieval:index
 
 # Search by a dataset sample
-SAMPLE=0 mise run search:retrieval
+SAMPLE=0 mise run retrieval:search
 
 # Start the web UI
 mise run serve:retrieval
@@ -54,7 +54,7 @@ CUDA support will be added later, same applies below.
 ### Index
 
 ```sh
-mise run index:retrieval
+mise run retrieval:index
 ```
 
 This writes `runs/retrieval/glyph_index.json`. The index stores candidate glyph
@@ -64,9 +64,9 @@ re-encode the glyph corpus.
 ### Search
 
 ```sh
-SAMPLE=0 mise run search:retrieval
-IMAGE=/path/to/query.png mise run search:retrieval
-TOP_K=16 SAMPLE=0 mise run search:retrieval
+SAMPLE=0 mise run retrieval:search
+IMAGE=/path/to/query.png mise run retrieval:search
+TOP_K=16 SAMPLE=0 mise run retrieval:search
 ```
 
 ### Serve
@@ -127,7 +127,7 @@ Useful task names:
 - `mise run data:pose-obc`: download the retrieval dataset
 - `mise run data:pose-obc:generate-pose`: generate cached SpinePose JSON files
 - `mise run train:retrieval`: train the pose/glyph retrieval model
-- `mise run index:retrieval`: precompute candidate glyph embeddings
+- `mise run retrieval:index`: precompute candidate glyph embeddings
 - `mise run serve:retrieval`: run the web UI
 
 ## License
