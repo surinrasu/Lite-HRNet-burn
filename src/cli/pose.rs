@@ -6,16 +6,15 @@ use std::{
 use ann::{backend::Autodiff, tensor::backend::AutodiffBackend};
 use pose_obc_retrieval::{
     CocoPoseDataset, HeadUpsampleMode, PoseDataConfig, PoseTrainingConfig, PoseTrainingProgress,
-    PoseTrainingReport,
-    train::{run_synthetic_training, train_dataset_with_progress},
+    PoseTrainingReport, train_dataset_with_progress,
 };
 
-use super::args::{BackendArg, HeadUpsampleArg, SmokeArgs, TrainArgs};
+use super::args::{BackendArg, HeadUpsampleArg, PoseTrainArgs};
 
 #[cfg(feature = "metal")]
 use super::init_metal_device;
 
-pub(super) fn run_train(args: TrainArgs) -> Result<(), Box<dyn Error>> {
+pub(super) fn run_train(args: PoseTrainArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
             type Backend = Autodiff<ann::backend::Flex>;
@@ -27,7 +26,7 @@ pub(super) fn run_train(args: TrainArgs) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(feature = "metal")]
-fn train_metal(args: TrainArgs) -> Result<(), Box<dyn Error>> {
+fn train_metal(args: PoseTrainArgs) -> Result<(), Box<dyn Error>> {
     use ann::backend::Metal;
 
     type Backend = Autodiff<Metal>;
@@ -36,12 +35,12 @@ fn train_metal(args: TrainArgs) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(not(feature = "metal"))]
-fn train_metal(_args: TrainArgs) -> Result<(), Box<dyn Error>> {
+fn train_metal(_args: PoseTrainArgs) -> Result<(), Box<dyn Error>> {
     Err("rebuild with `--features metal` to train on Metal".into())
 }
 
 fn train_with_backend<B: AutodiffBackend>(
-    args: TrainArgs,
+    args: PoseTrainArgs,
     device: &B::Device,
 ) -> Result<(), Box<dyn Error>> {
     let checkpoint_dir = args.out_dir.clone();
@@ -124,60 +123,6 @@ fn train_with_backend<B: AutodiffBackend>(
     Ok(())
 }
 
-pub(super) fn run_smoke(args: SmokeArgs) -> Result<(), Box<dyn Error>> {
-    let backend = args.backend;
-    match backend {
-        BackendArg::Flex => {
-            print_smoke_start(&args);
-            type Backend = Autodiff<ann::backend::Flex>;
-            let device = Default::default();
-            smoke_with_backend::<Backend>(args, &device)?;
-            print_smoke_done(backend);
-            Ok(())
-        }
-        BackendArg::Metal => {
-            print_smoke_start(&args);
-            smoke_metal(args)?;
-            print_smoke_done(backend);
-            Ok(())
-        }
-    }
-}
-
-#[cfg(feature = "metal")]
-fn smoke_metal(args: SmokeArgs) -> Result<(), Box<dyn Error>> {
-    use ann::backend::Metal;
-
-    type Backend = Autodiff<Metal>;
-    let device = init_metal_device()?;
-    smoke_with_backend::<Backend>(args, &device)?;
-    Ok(())
-}
-
-#[cfg(not(feature = "metal"))]
-fn smoke_metal(_args: SmokeArgs) -> Result<(), Box<dyn Error>> {
-    Err("rebuild with `--features metal` to use the Burn Metal backend".into())
-}
-
-fn smoke_with_backend<B: AutodiffBackend>(
-    args: SmokeArgs,
-    device: &B::Device,
-) -> Result<(), Box<dyn Error>> {
-    let mut config = args.model.config();
-    config.backbone.head_upsample_mode =
-        resolve_head_upsample(args.backend, args.head_upsample_mode);
-
-    let _model = run_synthetic_training::<B>(
-        config,
-        device,
-        args.steps,
-        args.batch_size,
-        args.input_size.height,
-        args.input_size.width,
-        args.learning_rate,
-    );
-    Ok(())
-}
 fn resolve_head_upsample(
     backend: BackendArg,
     requested: Option<HeadUpsampleArg>,
@@ -227,7 +172,7 @@ fn limited_len(len: usize, limit: Option<usize>) -> usize {
 }
 
 fn print_train_start(
-    args: &TrainArgs,
+    args: &PoseTrainArgs,
     train_samples: usize,
     val_samples: Option<usize>,
     num_joints: usize,
@@ -315,29 +260,6 @@ fn print_training_done(report: &PoseTrainingReport, checkpoint_dir: &Path) {
         "  last checkpoint: {}",
         checkpoint_dir.join("last.mpk").display()
     );
-}
-
-fn print_smoke_start(args: &SmokeArgs) {
-    let head_upsample_mode = resolve_head_upsample(args.backend, args.head_upsample_mode);
-    println!("Running synthetic smoke check");
-    println!("  backend: {}", args.backend);
-    println!("  model: {}", args.model);
-    println!(
-        "  input: {}x{}  batch: {}  steps: {}  lr: {}",
-        args.input_size.height,
-        args.input_size.width,
-        args.batch_size,
-        args.steps,
-        args.learning_rate
-    );
-    println!(
-        "  head upsample: {}",
-        format_head_upsample(head_upsample_mode)
-    );
-}
-
-fn print_smoke_done(backend: BackendArg) {
-    println!("Finished synthetic smoke check ({backend})");
 }
 
 fn format_head_upsample(mode: HeadUpsampleMode) -> &'static str {

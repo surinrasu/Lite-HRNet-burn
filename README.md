@@ -30,9 +30,7 @@ SAMPLE=0 mise run retrieval:search
 mise run serve:retrieval
 ```
 
-The UI listens on `http://127.0.0.1:8080` by default. Use `ADDR=127.0.0.1:1234`to choose another address.
-
-## Retrieval Workflow
+The UI listens on `http://127.0.0.1:8080` by default. Use `ADDR=127.0.0.1:1234` to choose another address.
 
 ### Train
 
@@ -60,9 +58,7 @@ CUDA support will be added later, same applies below.
 mise run retrieval:index
 ```
 
-This writes `runs/retrieval/glyph_index.json`. The index stores candidate glyph
-metadata plus normalized embeddings, so repeated searches do not need to
-re-encode the glyph corpus.
+This writes `runs/retrieval/glyph_index.json`. The index stores candidate glyph metadata plus normalized embeddings, so repeated searches do not need to re-encode the glyph corpus.
 
 Extracted pose and glyph feature will be cached under `runs/retrieval/feature_cache`. They are only valid for exactly same pair of source image and JSON. `
 
@@ -82,13 +78,11 @@ mise run serve:retrieval:metal
 mise run serve:retrieval:live
 ```
 
-The live mode posts browser camera frames to the local service and returns the
-top glyph candidates for each frame.
+The live mode posts browser camera frames to the local service and returns the top glyph candidates for each frame.
 
 ## Data Layout
 
-The retrieval dataset is expected to contain one or more `persona_*`
-directories. Image and glyph files are paired by filename.
+The retrieval dataset is expected to contain one or more `persona_*` directories. Image and glyph files are paired by filename.
 
 ```text
 data/pose-obc/
@@ -101,10 +95,9 @@ data/pose-obc/
       0201_u516D.json
 ```
 
-## Pose Model Training
+## Pose Model
 
-The repository also contains a Lite-HRNet training path for COCO person-keypoint
-data with 37-keypoint labels.
+The repository also contains a Lite-HRNet training path for COCO person-keypoint data with 37-keypoint labels.
 
 ```sh
 mise run data:coco2017
@@ -117,27 +110,6 @@ For Metal:
 ```sh
 mise run train:coco2017:metal
 ```
-
-## Development
-
-```sh
-mise run check
-mise run test
-mise run ci
-```
-
-Useful task names:
-
-- `mise run data:spinepose`: download local SpinePose ONNX model files
-- `mise run data:spinepose:convert`: preconvert local ONNX models with `onnx2burn`
-- `mise run assets:retrieval`: refresh local BeerCSS and Material Symbols assets
-- `mise run data:pose-obc`: download the retrieval dataset
-- `mise run data:pose-obc:generate-pose`: generate cached SpinePose JSON files
-- `mise run train:retrieval`: train the pose/glyph retrieval model
-- `mise run retrieval:index`: precompute candidate glyph embeddings
-- `mise run serve:retrieval`: run the web UI
-- `mise run fmt:check`: check Rust formatting
-- `mise run clippy`: run Clippy with warnings denied
 
 ## License
 

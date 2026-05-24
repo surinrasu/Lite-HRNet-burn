@@ -18,9 +18,10 @@ use ann::{
 use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 use serde::Serialize;
 
-use crate::{
-    CocoPoseDataset, LiteHrNetPose, LiteHrNetPoseConfig, PoseDataError, PoseTensorBatch,
-    joints_mse_loss,
+use super::{
+    data::{CocoPoseDataset, PoseDataError, PoseTensorBatch},
+    loss::joints_mse_loss,
+    model::{LiteHrNetPose, LiteHrNetPoseConfig},
 };
 
 pub struct PoseBatch<B: Backend> {

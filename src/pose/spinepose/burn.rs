@@ -10,7 +10,8 @@ use ann::{
 };
 use image::DynamicImage;
 
-use crate::{RetrievalError, SPINEPOSE_KEYPOINTS};
+use super::estimator::SPINEPOSE_KEYPOINTS;
+use crate::RetrievalError;
 
 const DETECTOR_BPK: &str = concat!(env!("OUT_DIR"), "/spinepose/rfdetr_m_v142_576x576.bpk");
 const POSE_BPK: &str = concat!(

@@ -8,7 +8,7 @@ use image::{Rgb, RgbImage};
 use json::{OwnedValue, json, prelude::*};
 use pose_obc_retrieval::{
     CocoPoseDataset, HeadUpsampleMode, LiteHrModuleType, LiteHrNetConfig, LiteHrNetPoseConfig,
-    PoseDataConfig, PoseTrainingConfig, train::train_dataset,
+    PoseDataConfig, PoseTrainingConfig, train_dataset,
 };
 
 type AB = Autodiff<Flex>;

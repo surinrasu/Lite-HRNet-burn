@@ -1,6 +1,6 @@
 use ann::{module::Module, prelude::Backend, tensor::Tensor};
 
-use crate::layers::{
+use super::layers::{
     ActivationKind, ConditionalChannelWeighting, ConvBnAct, DepthwiseSeparableConv, ShuffleUnit,
     Stem, interpolate_bilinear_aligned, interpolate_nearest,
 };

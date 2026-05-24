@@ -16,23 +16,13 @@ use pose_obc_retrieval::{
 };
 
 use super::args::{
-    BackendArg, RetrievalArgs, RetrievalCommand, RetrievalIndexArgs, RetrievalSearchArgs,
-    RetrievalServeArgs, RetrievalTrainArgs,
+    BackendArg, RetrievalIndexArgs, RetrievalSearchArgs, RetrievalServeArgs, RetrievalTrainArgs,
 };
 
 #[cfg(feature = "metal")]
 use super::init_metal_device;
 
-pub(super) fn run_retrieval(args: RetrievalArgs) -> Result<(), Box<dyn Error>> {
-    match args.command {
-        RetrievalCommand::Train(args) => run_retrieval_train(args),
-        RetrievalCommand::Index(args) => run_retrieval_index(args),
-        RetrievalCommand::Search(args) => run_retrieval_search(args),
-        RetrievalCommand::Serve(args) => run_retrieval_serve(args),
-    }
-}
-
-fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
+pub(super) fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
             type Backend = Autodiff<ann::backend::Flex>;
@@ -115,7 +105,7 @@ fn run_retrieval_train_with_backend<B: AutodiffBackend>(
     Ok(())
 }
 
-fn run_retrieval_index(args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
+pub(super) fn run_retrieval_index(args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
             type Backend = ann::backend::Flex;
@@ -166,7 +156,7 @@ fn run_retrieval_index_with_backend<B: Backend>(
     Ok(())
 }
 
-fn run_retrieval_search(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>> {
+pub(super) fn run_retrieval_search(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
             type Backend = ann::backend::Flex;
@@ -248,7 +238,7 @@ fn run_retrieval_search_with_backend<B: Backend>(
     Ok(())
 }
 
-fn run_retrieval_serve(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
+pub(super) fn run_retrieval_serve(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
     match args.backend {
         BackendArg::Flex => {
             type Backend = ann::backend::Flex;

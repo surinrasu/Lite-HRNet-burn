@@ -1007,7 +1007,7 @@ set -eu
 DATA_DIR="${DATA_DIR:-data/coco-37}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/coco37}"
 
-cargo run --release -- train \
+cargo run --release -- train pose \
   --annotations "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
   --images "${DATA_DIR}/train2017" \
   --pose-dir "${DATA_DIR}/poses/train2017" \
@@ -1027,7 +1027,7 @@ set -eu
 DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/retrieval}"
 
-cargo run --release -- retrieval train \
+cargo run --release -- train retrieval \
   --data-root "${DATA_ROOT}" \
   --output-dir "${OUTPUT_DIR}" \
   "$@"
@@ -1042,7 +1042,7 @@ set -eu
 DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/retrieval}"
 
-cargo run --release --features metal -- retrieval train \
+cargo run --release --features metal -- train retrieval \
   --backend metal \
   --data-root "${DATA_ROOT}" \
   --output-dir "${OUTPUT_DIR}" \
@@ -1069,7 +1069,7 @@ if [ "${index_dir}" != "${INDEX}" ] && [ -n "${index_dir}" ]; then
   mkdir -p "${index_dir}"
 fi
 
-cargo run --release -- retrieval index \
+cargo run --release -- index \
   --data-root "${DATA_ROOT}" \
   --model "${MODEL}" \
   --output "${INDEX}" \
@@ -1088,7 +1088,7 @@ INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
 TOP_K="${TOP_K:-8}"
 
 if [ -n "${IMAGE:-}" ]; then
-  cargo run --release -- retrieval search \
+  cargo run --release -- search \
     --data-root "${DATA_ROOT}" \
     --model "${MODEL}" \
     --index "${INDEX}" \
@@ -1096,7 +1096,7 @@ if [ -n "${IMAGE:-}" ]; then
     --top-k "${TOP_K}" \
     "$@"
 elif [ -n "${SAMPLE:-}" ]; then
-  cargo run --release -- retrieval search \
+  cargo run --release -- search \
     --data-root "${DATA_ROOT}" \
     --model "${MODEL}" \
     --index "${INDEX}" \
@@ -1104,13 +1104,13 @@ elif [ -n "${SAMPLE:-}" ]; then
     --top-k "${TOP_K}" \
     "$@"
 elif [ "$#" -gt 0 ]; then
-  cargo run --release -- retrieval search \
+  cargo run --release -- search \
     --data-root "${DATA_ROOT}" \
     --model "${MODEL}" \
     --index "${INDEX}" \
     "$@"
 else
-  echo "Set IMAGE=/path/to/query.png, SAMPLE=0, or pass retrieval search arguments."
+  echo "Set IMAGE=/path/to/query.png, SAMPLE=0, or pass search arguments."
   exit 1
 fi
 '''
@@ -1138,7 +1138,7 @@ if [ "${BACKEND}" = "metal" ]; then
 fi
 
 if [ -f "${INDEX}" ]; then
-  cargo run ${CARGO_ARGS} -- retrieval serve \
+  cargo run ${CARGO_ARGS} -- serve \
     --backend "${BACKEND}" \
     --data-root "${DATA_ROOT}" \
     --model "${MODEL}" \
@@ -1149,7 +1149,7 @@ if [ -f "${INDEX}" ]; then
     "$@"
 else
   echo "Retrieval index not found at ${INDEX}; serving will build candidates in memory."
-  cargo run ${CARGO_ARGS} -- retrieval serve \
+  cargo run ${CARGO_ARGS} -- serve \
     --backend "${BACKEND}" \
     --data-root "${DATA_ROOT}" \
     --model "${MODEL}" \
@@ -1181,7 +1181,7 @@ set -eu
 DATA_DIR="${DATA_DIR:-data/coco-37}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/coco37}"
 
-cargo run --release --features metal -- train \
+cargo run --release --features metal -- train pose \
   --backend metal \
   --annotations "${DATA_DIR}/annotations/person_keypoints_train2017.json" \
   --images "${DATA_DIR}/train2017" \

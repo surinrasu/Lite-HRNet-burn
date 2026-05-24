@@ -9,7 +9,7 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
     let sample_count = service.dataset.len();
     let candidate_count = service.index.entries.len();
     let top_k = service.default_top_k;
-    let example_images = super::example_image_names();
+    let example_images = super::assets::example_image_names();
 
     maud! {
         !DOCTYPE
@@ -133,8 +133,8 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
                     @if !example_images.is_empty() {
                         div class="example-gallery" aria-label="Example images" {
                             @for name in example_images.iter() {
-                                a class="example-card" href=(format!("{}{}", super::EXAMPLE_ASSET_PREFIX, name)) aria-label=(format!("Example {name}")) {
-                                    img src=(format!("{}{}", super::EXAMPLE_ASSET_PREFIX, name)) alt=(format!("Example {name}")) "loading"="lazy";
+                                    a class="example-card" href=(format!("{}{}", super::assets::EXAMPLE_ASSET_PREFIX, name)) aria-label=(format!("Example {name}")) {
+                                        img src=(format!("{}{}", super::assets::EXAMPLE_ASSET_PREFIX, name)) alt=(format!("Example {name}")) "loading"="lazy";
                                 }
                             }
                         }

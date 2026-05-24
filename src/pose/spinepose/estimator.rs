@@ -6,7 +6,8 @@ use std::{
 use image::DynamicImage;
 use serde::Deserialize;
 
-use crate::{RetrievalError, spinepose_burn};
+use super::burn;
+use crate::RetrievalError;
 
 pub const SPINEPOSE_KEYPOINTS: usize = 37;
 pub const SPINEPOSE_VALUES_PER_KEYPOINT: usize = 3;
@@ -207,7 +208,7 @@ fn landmark_normalization(keypoints: &[[f32; 3]]) -> (f32, f32, f32) {
 }
 
 fn run_spinepose(image: &DynamicImage) -> Result<Vec<[f32; 3]>, RetrievalError> {
-    let people = spinepose_burn::estimate_people(image)?;
+    let people = burn::estimate_people(image)?;
     best_spinepose_person(&people)
         .map(<[_]>::to_vec)
         .ok_or_else(|| RetrievalError::InvalidData("SpinePose did not detect a person".to_string()))

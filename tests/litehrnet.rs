@@ -5,8 +5,8 @@ use ann::{
 use pose_obc_retrieval::{
     ConditionalChannelWeighting, CrossResolutionWeighting, HeadUpsampleMode, IterativeHead,
     LiteHrModule, LiteHrModuleType, LiteHrNetConfig, LiteHrNetPoseConfig, ShuffleUnit,
-    SpatialWeighting, Stem, channel_shuffle,
-    train::{run_synthetic_training, synthetic_pose_batch, train_step},
+    SpatialWeighting, Stem, channel_shuffle, run_synthetic_training, synthetic_pose_batch,
+    train_step,
 };
 
 type B = Flex;

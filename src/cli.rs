@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use args::{Cli, Command};
+use args::{Cli, Command, TrainTarget};
 use cli::Parser;
 
 mod args;
@@ -11,9 +11,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Train(args) => pose::run_train(args),
-        Command::Smoke(args) => pose::run_smoke(args),
-        Command::Retrieval(args) => retrieval::run_retrieval(args),
+        Command::Train(args) => match args.target {
+            TrainTarget::Retrieval(args) => retrieval::run_retrieval_train(args),
+            TrainTarget::Pose(args) => pose::run_train(*args),
+        },
+        Command::Index(args) => retrieval::run_retrieval_index(args),
+        Command::Search(args) => retrieval::run_retrieval_search(args),
+        Command::Serve(args) => retrieval::run_retrieval_serve(args),
     }
 }
 
