@@ -7,23 +7,122 @@ rust = { version = "latest", components = "cargo,rust-analyzer" }
 [tasks.build]
 description = "Build the CLI"
 alias = "b"
-sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+depends = ["check:models:spinepose"]
+sources = ["Cargo.toml", "Cargo.lock", "build.rs", "src/**/*.rs"]
 outputs = ["target/debug/pose-obc-retrieval"]
 run = "cargo build"
 
 [tasks.check]
 description = "Run cargo check"
-sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+depends = ["check:data:spinepose"]
+sources = ["Cargo.toml", "Cargo.lock", "build.rs", "src/**/*.rs"]
 run = "cargo check"
+
+[tasks."fmt:check"]
+description = "Check Rust formatting"
+sources = ["Cargo.toml", "Cargo.lock", "build.rs", "src/**/*.rs", "tests/**/*.rs"]
+run = "cargo fmt --check"
+
+[tasks.clippy]
+description = "Run Clippy with warnings denied"
+depends = ["check:data:spinepose"]
+sources = ["Cargo.toml", "Cargo.lock", "build.rs", "src/**/*.rs", "tests/**/*.rs"]
+run = "cargo clippy --all-targets --all-features -- -D warnings"
 
 [tasks.test]
 description = "Run Rust tests"
 alias = "t"
+depends = ["check:data:spinepose"]
 run = "cargo test"
 
 [tasks.ci]
 description = "Run local CI checks"
-depends = ["check", "test"]
+depends = ["fmt:check", "clippy", "check", "test"]
+
+[tasks."data:spinepose"]
+description = "Download SpinePose ONNX models used by the Burn runtime"
+sources = ["mise.toml"]
+outputs = [
+  "{{ env.SPINEPOSE_MODEL_DIR | default(value='assets/models/spinepose') }}/rfdetr_m_v142_576x576.onnx",
+  "{{ env.SPINEPOSE_MODEL_DIR | default(value='assets/models/spinepose') }}/spinepose-l_32xb256-10e_simspine-256x192.onnx",
+]
+run = '''
+set -eu
+
+MODEL_DIR="${SPINEPOSE_MODEL_DIR:-assets/models/spinepose}"
+mkdir -p "${MODEL_DIR}"
+
+download_if_missing() {
+  url="$1"
+  dst="$2"
+
+  if [ -s "${dst}" ]; then
+    echo "Keeping existing ${dst}"
+    return
+  fi
+
+  tmp="${dst}.tmp"
+  rm -f "${tmp}"
+  curl -fL "${url}" -o "${tmp}"
+  mv "${tmp}" "${dst}"
+}
+
+download_if_missing \
+  "https://huggingface.co/saifkhichi96/opendetect/resolve/main/rfdetr/rfdetr_m_v142_576x576.onnx" \
+  "${MODEL_DIR}/rfdetr_m_v142_576x576.onnx"
+download_if_missing \
+  "https://huggingface.co/dfki-av/spinepose/resolve/main/spinepose-l_32xb256-10e_simspine-256x192.onnx" \
+  "${MODEL_DIR}/spinepose-l_32xb256-10e_simspine-256x192.onnx"
+
+echo "SpinePose ONNX models are ready under ${MODEL_DIR}"
+'''
+
+[tasks."data:spinepose:convert"]
+description = "Convert local SpinePose ONNX models to Burn source and burnpack files"
+depends = ["data:spinepose"]
+tools = { "cargo:burn-onnx" = "0.21.0" }
+sources = [
+  "{{ env.SPINEPOSE_MODEL_DIR | default(value='assets/models/spinepose') }}/rfdetr_m_v142_576x576.onnx",
+  "{{ env.SPINEPOSE_MODEL_DIR | default(value='assets/models/spinepose') }}/spinepose-l_32xb256-10e_simspine-256x192.onnx",
+]
+outputs = [
+  "{{ env.SPINEPOSE_BURN_DIR | default(value='target/generated/spinepose') }}/rfdetr_m_v142_576x576.rs",
+  "{{ env.SPINEPOSE_BURN_DIR | default(value='target/generated/spinepose') }}/rfdetr_m_v142_576x576.bpk",
+  "{{ env.SPINEPOSE_BURN_DIR | default(value='target/generated/spinepose') }}/spinepose-l_32xb256-10e_simspine-256x192.rs",
+  "{{ env.SPINEPOSE_BURN_DIR | default(value='target/generated/spinepose') }}/spinepose-l_32xb256-10e_simspine-256x192.bpk",
+]
+run = '''
+set -eu
+
+MODEL_DIR="${SPINEPOSE_MODEL_DIR:-assets/models/spinepose}"
+BURN_DIR="${SPINEPOSE_BURN_DIR:-target/generated/spinepose}"
+mkdir -p "${BURN_DIR}"
+
+onnx2burn "${MODEL_DIR}/rfdetr_m_v142_576x576.onnx" "${BURN_DIR}" --no-development
+onnx2burn "${MODEL_DIR}/spinepose-l_32xb256-10e_simspine-256x192.onnx" "${BURN_DIR}" --no-development
+
+echo "SpinePose Burn artifacts are ready under ${BURN_DIR}"
+echo "Use them with: SPINEPOSE_BURN_DIR=${BURN_DIR} cargo build"
+'''
+
+[tasks."check:data:spinepose"]
+description = "Check SpinePose ONNX model files"
+hide = true
+run = '''
+set -eu
+
+MODEL_DIR="${SPINEPOSE_MODEL_DIR:-assets/models/spinepose}"
+for model in \
+  "rfdetr_m_v142_576x576.onnx" \
+  "spinepose-l_32xb256-10e_simspine-256x192.onnx"
+do
+  if [ ! -s "${MODEL_DIR}/${model}" ]; then
+    echo "Missing ${MODEL_DIR}/${model}"
+    echo "Run: mise run data:spinepose"
+    exit 1
+  fi
+done
+'''
 
 [tasks."assets:retrieval"]
 description = "Update local front-end assets for retrieval"

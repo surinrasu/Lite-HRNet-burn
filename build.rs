@@ -1,36 +1,42 @@
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use burn_onnx::ModelGen;
 
 const OUT_DIR_NAME: &str = "spinepose";
+const DEFAULT_MODEL_DIR: &str = "assets/models/spinepose";
 
 struct ModelSpec {
     filename: &'static str,
-    url: &'static str,
+    stem: &'static str,
 }
 
 const MODELS: &[ModelSpec] = &[
     ModelSpec {
         filename: "rfdetr_m_v142_576x576.onnx",
-        url: "https://huggingface.co/saifkhichi96/opendetect/resolve/main/rfdetr/rfdetr_m_v142_576x576.onnx",
+        stem: "rfdetr_m_v142_576x576",
     },
     ModelSpec {
         filename: "spinepose-l_32xb256-10e_simspine-256x192.onnx",
-        url: "https://huggingface.co/dfki-av/spinepose/resolve/main/spinepose-l_32xb256-10e_simspine-256x192.onnx",
+        stem: "spinepose-l_32xb256-10e_simspine-256x192",
     },
 ];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=SPINEPOSE_MODEL_DIR");
+    println!("cargo:rerun-if-env-changed=SPINEPOSE_BURN_DIR");
+
+    if let Some(burn_dir) = env::var_os("SPINEPOSE_BURN_DIR").map(PathBuf::from) {
+        copy_preconverted_models(&burn_dir).unwrap_or_else(|error| panic!("{error}"));
+        return;
+    }
 
     let model_paths = MODELS
         .iter()
-        .map(|spec| ensure_model(spec).unwrap_or_else(|error| panic!("{error}")))
+        .map(|spec| resolve_model(spec).unwrap_or_else(|error| panic!("{error}")))
         .collect::<Vec<_>>();
 
     let mut generator = ModelGen::new();
@@ -45,34 +51,60 @@ fn main() {
     generator.run_from_script();
 }
 
-fn ensure_model(spec: &ModelSpec) -> io::Result<PathBuf> {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(io::Error::other)?);
-    let model_dir = env::var_os("SPINEPOSE_MODEL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("assets/models/spinepose"));
-    let dst = model_dir.join(spec.filename);
-    if dst.is_file() {
-        return Ok(dst);
-    }
+fn copy_preconverted_models(burn_dir: &Path) -> io::Result<()> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(io::Error::other)?).join(OUT_DIR_NAME);
+    fs::create_dir_all(&out_dir)?;
 
-    fs::create_dir_all(&model_dir)?;
-    for candidate in local_cache_candidates(&manifest_dir, spec.filename) {
-        if candidate.is_file() {
-            fs::copy(&candidate, &dst)?;
-            return Ok(dst);
+    for spec in MODELS {
+        for extension in ["rs", "bpk"] {
+            let source = burn_dir.join(format!("{}.{}", spec.stem, extension));
+            if !source.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "missing preconverted SpinePose artifact {}; run `mise run models:spinepose:convert` or unset SPINEPOSE_BURN_DIR",
+                        source.display()
+                    ),
+                ));
+            }
+            println!("cargo:rerun-if-changed={}", source.display());
+            fs::copy(&source, out_dir.join(source.file_name().unwrap()))?;
         }
     }
 
-    download_model(spec, &dst)?;
-    Ok(dst)
+    Ok(())
 }
 
-fn local_cache_candidates(manifest_dir: &Path, filename: &str) -> Vec<PathBuf> {
-    let mut candidates = vec![
+fn resolve_model(spec: &ModelSpec) -> io::Result<PathBuf> {
+    for candidate in model_candidates(spec.filename)? {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "missing SpinePose ONNX model {}; run `mise run models:spinepose` or set SPINEPOSE_MODEL_DIR",
+            spec.filename
+        ),
+    ))
+}
+
+fn model_candidates(filename: &str) -> io::Result<Vec<PathBuf>> {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(io::Error::other)?);
+    let mut candidates = Vec::new();
+
+    if let Some(model_dir) = env::var_os("SPINEPOSE_MODEL_DIR") {
+        candidates.push(PathBuf::from(model_dir).join(filename));
+    }
+
+    candidates.push(manifest_dir.join(DEFAULT_MODEL_DIR).join(filename));
+    candidates.push(
         manifest_dir
             .join(".spinepose-home/.cache/spinepose/hub/checkpoints")
             .join(filename),
-    ];
+    );
 
     if let Some(home) = env::var_os("HOME") {
         candidates.push(
@@ -82,23 +114,5 @@ fn local_cache_candidates(manifest_dir: &Path, filename: &str) -> Vec<PathBuf> {
         );
     }
 
-    candidates
-}
-
-fn download_model(spec: &ModelSpec, dst: &Path) -> io::Result<()> {
-    let tmp = dst.with_extension("onnx.tmp");
-    let status = Command::new("curl")
-        .args(["-fL", spec.url, "-o"])
-        .arg(&tmp)
-        .status()?;
-
-    if !status.success() {
-        let _ = fs::remove_file(&tmp);
-        return Err(io::Error::other(format!(
-            "failed to download {} from {}; set SPINEPOSE_MODEL_DIR or run a pipx spinepose data-generation task once to populate .spinepose-home",
-            spec.filename, spec.url
-        )));
-    }
-
-    fs::rename(tmp, dst)
+    Ok(candidates)
 }

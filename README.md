@@ -2,7 +2,7 @@
 
 ![](./banner.png)
 
-`pose-obc-retrieval` is a Rust CLI and browser UI for retrieving oracle-bone glyphs from human pose. It trains a compact twin-tower retrieval model that embeds SpinePose style 37-keypoint pose features and raster glyph shape features into the same cosine-search space.
+`pose-obc-retrieval` is a Rust CLI and web UI for retrieving oracle-bone glyphs from human pose. It trains a compact twin-tower retrieval model that embeds SpinePose style 37-keypoint pose features and raster glyph shape features into the same cosine-search space.
 
 ## Usage
 
@@ -11,6 +11,9 @@ The project uses [mise](https://mise.jdx.dev/) for the Rust toolchain and tasks.
 ```sh
 mise trust
 mise install
+
+# Download SpinePose ONNX models used by the Burn runtime
+mise run data:spinepose
 
 # Download the pose-obc retrieval dataset from Hugging Face
 # You may need to login to an hf account with `hf auth login` first
@@ -60,6 +63,8 @@ mise run retrieval:index
 This writes `runs/retrieval/glyph_index.json`. The index stores candidate glyph
 metadata plus normalized embeddings, so repeated searches do not need to
 re-encode the glyph corpus.
+
+Extracted pose and glyph feature will be cached under `runs/retrieval/feature_cache`. They are only valid for exactly same pair of source image and JSON. `
 
 ### Search
 
@@ -123,12 +128,16 @@ mise run ci
 
 Useful task names:
 
+- `mise run data:spinepose`: download local SpinePose ONNX model files
+- `mise run data:spinepose:convert`: preconvert local ONNX models with `onnx2burn`
 - `mise run assets:retrieval`: refresh local BeerCSS and Material Symbols assets
 - `mise run data:pose-obc`: download the retrieval dataset
 - `mise run data:pose-obc:generate-pose`: generate cached SpinePose JSON files
 - `mise run train:retrieval`: train the pose/glyph retrieval model
 - `mise run retrieval:index`: precompute candidate glyph embeddings
 - `mise run serve:retrieval`: run the web UI
+- `mise run fmt:check`: check Rust formatting
+- `mise run clippy`: run Clippy with warnings denied
 
 ## License
 

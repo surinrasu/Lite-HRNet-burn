@@ -37,6 +37,17 @@ pub fn build_candidate_index<B: Backend>(
     unique_by_id: bool,
     device: &B::Device,
 ) -> Result<CandidateIndex, RetrievalError> {
+    build_candidate_index_with_cache(model, model_config, dataset, unique_by_id, device, None)
+}
+
+pub fn build_candidate_index_with_cache<B: Backend>(
+    model: &RetrievalModel<B>,
+    model_config: RetrievalModelConfig,
+    dataset: &RetrievalPairDataset,
+    unique_by_id: bool,
+    device: &B::Device,
+    feature_cache_dir: Option<&Path>,
+) -> Result<CandidateIndex, RetrievalError> {
     let mut entries = Vec::new();
     let mut seen_paths = HashSet::new();
 
@@ -44,7 +55,7 @@ pub fn build_candidate_index<B: Backend>(
         if !seen_paths.insert(candidate.glyph_path.clone()) {
             continue;
         }
-        let features = extract_glyph_features_from_path(&candidate.glyph_path)?;
+        let features = extract_glyph_features_with_cache(&candidate.glyph_path, feature_cache_dir)?;
         let embedding = encode_glyph_features(model, &features, device)?;
         entries.push(CandidateEntry {
             id: candidate.id,

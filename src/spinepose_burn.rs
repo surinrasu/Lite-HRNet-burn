@@ -12,7 +12,6 @@ use image::DynamicImage;
 
 use crate::{RetrievalError, SPINEPOSE_KEYPOINTS};
 
-const OUT_DIR_NAME: &str = "spinepose";
 const DETECTOR_BPK: &str = concat!(env!("OUT_DIR"), "/spinepose/rfdetr_m_v142_576x576.bpk");
 const POSE_BPK: &str = concat!(
     env!("OUT_DIR"),
@@ -85,7 +84,7 @@ impl BurnSpinePoseRuntime {
         for path in [DETECTOR_BPK, POSE_BPK] {
             if !Path::new(path).is_file() {
                 return Err(RetrievalError::InvalidData(format!(
-                    "generated SpinePose burnpack is missing at {path}; rerun cargo build so build.rs can generate {OUT_DIR_NAME} models"
+                    "generated SpinePose burnpack is missing at {path}; rerun cargo build with local ONNX models or run `mise run models:spinepose` first"
                 )));
             }
         }
